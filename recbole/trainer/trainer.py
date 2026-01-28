@@ -558,6 +558,32 @@ class Trainer(AbstractTrainer):
             scores[row_idx, col_idx] = origin_scores
             return interaction, scores, positive_u, positive_i
 
+    def _fast_neg_sample_batch_eval(self, batched_data):
+        interaction, row_idx, positive_u, positive_i = batched_data
+        batch_size = interaction.length
+        if batch_size <= self.test_batch_size:
+            origin_scores = self.model.fast_predict(interaction.to(self.device))  #计算每个交互序列对其正样本的得分
+        else:
+            raise NotImplementedError("模型没有实现fast_predict!不能使用fast评估")
+        if self.config["eval_type"] == EvaluatorType.VALUE:
+            raise NotImplementedError("fast还未实现此类型评估策略")
+        elif self.config["eval_type"] == EvaluatorType.RANKING:
+            pos_ids = interaction[self.config["ITEM_ID_FIELD"]]  #(batch,)
+            neg_ids = interaction[self.config["eval_args"]["neg_field"]]  #(batch,sample_num)
+            pos_ids = pos_ids.unsqueeze(1)
+            col_idx = torch.cat([pos_ids, neg_ids], dim=1)  #将每个正样本和对应的负样本集合按照列拼接一起(batch,(1+sample_num))
+            col_idx = torch.flatten(col_idx)  #展成一维和row_ids对应
+            # col_idx = interaction[self.config["ITEM_ID_FIELD"]]  #正负样本的id
+            #这里操作一下，将正样本的id和负样本的id，cat一下，拼成一个向量，也就是一个正样本id后面加n个负样本id，然后以此类推
+            batch_user_num = positive_u[-1] + 1
+            scores = torch.full(
+                (batch_user_num, self.tot_item_num), -np.inf, device=self.device
+            )
+            origin_scores = torch.flatten(origin_scores)
+            scores[row_idx, col_idx] = origin_scores  #目标就是把每个交互序列的正负样本的得分标记到对应的位置
+            #positive_u等于用户数量，positive_i等于用户数量表示每个用户的正样本项目的id
+            return interaction, scores, positive_u, positive_i
+
     @torch.no_grad()
     def evaluate(
         self, eval_data, load_best_model=True, model_file=None, show_progress=False
@@ -595,7 +621,8 @@ class Trainer(AbstractTrainer):
             if self.item_tensor is None:
                 self.item_tensor = eval_data._dataset.get_item_feature().to(self.device)
         else:
-            eval_func = self._neg_sample_batch_eval
+            # eval_func = self._neg_sample_batch_eval
+            eval_func = self._fast_neg_sample_batch_eval
         if self.config["eval_type"] == EvaluatorType.RANKING:
             self.tot_item_num = eval_data._dataset.item_num
 

@@ -91,8 +91,8 @@ class NegSampleEvalDataLoader(NegSampleDataLoader):
             config, dataset, InputType.POINTWISE, config[f"{phase}_neg_sample_args"]
         )
         if (
-            self.neg_sample_args["distribution"] != "none"
-            and self.neg_sample_args["sample_num"] != "none"
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
         ):
             user_num = dataset.user_num
             dataset.sort(by=dataset.uid_field, ascending=True)
@@ -120,8 +120,8 @@ class NegSampleEvalDataLoader(NegSampleDataLoader):
     def _init_batch_size_and_step(self):
         batch_size = self.config["eval_batch_size"]
         if (
-            self.neg_sample_args["distribution"] != "none"
-            and self.neg_sample_args["sample_num"] != "none"
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
         ):
             inters_num = sorted(self.uid2items_num * self.times, reverse=True)
             batch_num = 1
@@ -150,8 +150,8 @@ class NegSampleEvalDataLoader(NegSampleDataLoader):
     def collate_fn(self, index):
         index = np.array(index)
         if (
-            self.neg_sample_args["distribution"] != "none"
-            and self.neg_sample_args["sample_num"] != "none"
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
         ):
             uid_list = self.uid_list[index]
             data_list = []
@@ -210,8 +210,8 @@ class FullSortEvalDataLoader(AbstractDataLoader):
             positive_item = set()
             uid2used_item = sampler.used_ids
             for uid, iid in zip(
-                dataset.inter_feat[self.uid_field].numpy(),
-                dataset.inter_feat[self.iid_field].numpy(),
+                    dataset.inter_feat[self.uid_field].numpy(),
+                    dataset.inter_feat[self.iid_field].numpy(),
             ):
                 if uid != last_uid:
                     self._set_user_property(
@@ -286,3 +286,164 @@ class FullSortEvalDataLoader(AbstractDataLoader):
             positive_i = transformed_interaction[self.iid_field]
 
             return transformed_interaction, None, positive_u, positive_i
+
+
+class FastNegSampleEvalDataLoader(NegSampleDataLoader):
+    """:class:`NegSampleEvalDataLoader` is a dataloader for neg-sampling evaluation.
+    It is similar to :class:`TrainDataLoader` which can generate negative items,
+    and this dataloader also permits that all the interactions corresponding to each user are in the same batch
+    and positive interactions are before negative interactions.
+
+    Args:
+        config (Config): The config of dataloader.
+        dataset (Dataset): The dataset of dataloader.
+        sampler (Sampler): The sampler of dataloader.
+        shuffle (bool, optional): Whether the dataloader will be shuffle after a round. Defaults to ``False``.
+    """
+
+    def __init__(self, config, dataset, sampler, shuffle=False):
+        self.logger = getLogger()
+        phase = sampler.phase if sampler is not None else "test"  #当前阶段的字符串，valid test
+        self._set_neg_sample_args(
+            config, dataset, InputType.POINTWISE, config[f"{phase}_neg_sample_args"]
+        )
+        if (
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
+        ):  #如果是制定样本数的负采样
+            user_num = dataset.user_num
+            dataset.sort(by=dataset.uid_field, ascending=True)
+            self.uid_list = []
+            start, end = dict(), dict()  #存储每个用户最早的交互的下标和最晚的
+            for i, uid in enumerate(dataset.inter_feat[dataset.uid_field].numpy()):  #将用户ID转成np列表一个个便利
+                if uid not in start:
+                    self.uid_list.append(uid)
+                    start[uid] = i
+                end[uid] = i
+            self.uid2index = np.array([None] * user_num)  #存储的用户对应的交互的索引，感觉没意义
+            self.uid2items_num = np.zeros(user_num, dtype=np.int64)  #存储的用户的交互序列的数量
+            for uid in self.uid_list:
+                self.uid2index[uid] = slice(start[uid], end[uid] + 1)
+                self.uid2items_num[uid] = end[uid] - start[uid] + 1
+            self.uid_list = np.array(self.uid_list)  #存储所有用户的id
+            self.sample_size = len(self.uid_list)  #存储用户的数量
+        else:
+            self.sample_size = len(dataset)
+        if shuffle:
+            self.logger.warning("NegSampleEvalDataLoader can't shuffle")
+            shuffle = False
+        super().__init__(config, dataset, sampler, shuffle=shuffle)
+        self.NEG_FIELD = config['eval_args']['neg_field']
+
+    def _init_batch_size_and_step(self):
+        """
+        这个方法在创建dataloader的时候会在init里面调用一次来设定
+        当前loader的批次大小，只会不会再调用
+        Returns:
+
+        """
+        batch_size = self.config["eval_batch_size"]  #获取配置文件的size
+        self.step = batch_size
+        self.set_batch_size(batch_size)
+
+    def update_config(self, config):
+        """
+        用来将新的配置更新到采样器里面
+        Args:
+            config:
+
+        Returns:
+
+        """
+        phase = self._sampler.phase if self._sampler.phase is not None else "test"
+        self._set_neg_sample_args(
+            config,
+            self._dataset,
+            InputType.POINTWISE,
+            config[f"{phase}_neg_sample_args"],
+        )
+        super().update_config(config)
+
+    def collate_fn(self, index):
+        """
+        每次调用loader的next_batch时调用
+        Args:
+            index:
+
+        Returns:
+
+        """
+        index = np.array(index)  #送进来的
+        if (
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
+        ):
+            uid_list = self.uid_list[index]
+            data_list = []
+            idx_list = []
+            positive_u = []
+            positive_i = torch.tensor([], dtype=torch.int64)
+
+            for idx, uid in enumerate(uid_list):  #按照用户id处理数据，为同一个用户下的数据分配相同的索引
+                index = self.uid2index[uid]  #获取用户对应的交互的索引元组(start,end+1)
+                origin_interactions = self._dataset[index]
+                transformed_data = origin_interactions
+                #返回interaction对象
+                data_list.append(self._neg_sampling(transformed_data))
+                #存放用户对应的正样本交互和负样本交互 interaction
+                idx_list += [idx for i in range(self.uid2items_num[uid] * self.times)]
+                #标记每个构建的新的交互，属于当前batch的第几个用户 长度为(user_num * seq_num * neg_num+1)
+                positive_u += [idx for i in range(self.uid2items_num[uid])]
+                #标记每个正样本所属的用户在当前batch的索引，长度为(user_num * seq_num)
+                positive_i = torch.cat(
+                    (positive_i, self._dataset[index][self.iid_field]), 0
+                )  #将每个用户的正样本存进去 长度为(user_num * seq_len)
+                #positive_i 和 positive_u 对应的
+
+            cur_data = cat_interactions(data_list)  #合并所有用户interaction
+            idx_list = torch.from_numpy(np.array(idx_list)).long()
+            positive_u = torch.from_numpy(np.array(positive_u)).long()
+
+            return cur_data, idx_list, positive_u, positive_i
+        else:
+            data = self._dataset[index]
+            transformed_data = self.transform(self._dataset, data)
+            cur_data = self._neg_sampling(transformed_data)  #返回正样本和负样本对应的交互
+            return cur_data, None, None, None
+
+    def _neg_sampling(self, inter_feat):
+        if self.neg_sample_args.get("dynamic", False):
+            #动态采样
+            candidate_num = self.neg_sample_args["candidate_num"]
+            user_ids = inter_feat[self.uid_field].numpy()
+            item_ids = inter_feat[self.iid_field].numpy()
+            neg_candidate_ids = self._sampler.sample_by_user_ids(
+                user_ids, item_ids, self.neg_sample_num * candidate_num
+            )
+            self.model.eval()
+            interaction = copy.deepcopy(inter_feat).to(self.model.device)
+            interaction = interaction.repeat(self.neg_sample_num * candidate_num)
+            neg_item_feat = Interaction(
+                {self.iid_field: neg_candidate_ids.to(self.model.device)}
+            )
+            interaction.update(neg_item_feat)
+            scores = self.model.predict(interaction).reshape(candidate_num, -1)
+            indices = torch.max(scores, dim=0)[1].detach()
+            neg_candidate_ids = neg_candidate_ids.reshape(candidate_num, -1)
+            neg_item_ids = neg_candidate_ids[
+                indices, [i for i in range(neg_candidate_ids.shape[1])]
+            ].view(-1)
+        elif (
+                self.neg_sample_args["distribution"] != "none"
+                and self.neg_sample_args["sample_num"] != "none"
+        ):
+            #均匀采样
+            user_ids = inter_feat[self.uid_field].numpy()
+            item_ids = inter_feat[self.iid_field].numpy()
+            neg_item_ids = self._sampler.sample_by_user_ids(
+                user_ids, item_ids, self.neg_sample_num
+            )  #采样对应用户的负样本集合
+        else:
+            neg_item_ids = torch.zeros(self.neg_sample_num, dtype=torch.long)
+        inter_feat[self.NEG_FIELD] = neg_item_ids.unsqueeze(0)
+        return inter_feat

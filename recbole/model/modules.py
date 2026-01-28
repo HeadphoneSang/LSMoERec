@@ -1,0 +1,234 @@
+import torch
+import math
+import numpy as np
+from torch import nn
+import torch.nn.functional as F
+
+class MultiHeadAttention(nn.Module):
+    def __init__(
+            self,
+            n_heads,
+            hidden_size,
+            hidden_dropout_prob,
+            attn_dropout_prob,
+            layer_norm_eps,
+    ):
+        super(MultiHeadAttention, self).__init__()
+        if hidden_size % n_heads != 0:
+            raise ValueError(
+                "The hidden size (%d) is not a multiple of the number of attention "
+                "heads (%d)" % (hidden_size, n_heads)
+            )
+
+        self.num_attention_heads = n_heads
+        self.attention_head_size = int(hidden_size / n_heads)
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+        self.sqrt_attention_head_size = math.sqrt(self.attention_head_size)
+
+        self.query = nn.Linear(hidden_size, self.all_head_size)
+        self.key = nn.Linear(hidden_size, self.all_head_size)
+        self.value = nn.Linear(hidden_size, self.all_head_size)
+        self.softmax = nn.Softmax(dim=-1)  #row-wise
+        self.softmax_col = nn.Softmax(dim=-2)  #column-wise
+        self.attn_dropout = nn.Dropout(attn_dropout_prob)
+        self.scale = np.sqrt(hidden_size)
+        self.dense = nn.Linear(hidden_size, hidden_size)
+        self.LayerNorm = nn.LayerNorm(hidden_size, eps=layer_norm_eps)
+        self.out_dropout = nn.Dropout(hidden_dropout_prob)
+
+    def transpose_for_scores(self, x):
+        new_x_shape = x.size()[:-1] + (
+            self.num_attention_heads,
+            self.attention_head_size,
+        )
+        x = x.view(*new_x_shape)
+        return x
+
+    def forward(self, input_tensor):
+        """
+        外部传来的tensor没有位置编码
+        Args:
+            input_tensor:
+
+        Returns:
+
+        """
+        mixed_query_layer = self.query(input_tensor)
+        mixed_key_layer = self.key(input_tensor)
+        mixed_value_layer = self.value(input_tensor)
+        # (batch,head_num,seq_len,hidden_size)
+        query_layer = self.transpose_for_scores(mixed_query_layer).permute(0, 2, 1, 3)
+        # (batch,head_num,hidden_size,seq_len)
+        key_layer = self.transpose_for_scores(mixed_key_layer).permute(0, 2, 3, 1)
+        # (batch,head_num,seq_len,hidden_size)
+        value_layer = self.transpose_for_scores(mixed_value_layer).permute(0, 2, 1, 3)
+
+        # Our Elu Norm Attention
+        elu = nn.ELU()
+        # relu = nn.ReLU()
+        elu_query = elu(query_layer)
+        elu_key = elu(key_layer)
+        # (L2 norm,计算每个向量的L2范数) (batch,head_num,seq_len)
+        query_norm_inverse = 1 / torch.norm(elu_query, dim=3, p=2)
+        # (L2 norm,计算每个向量的L2范数) (batch,head_num,seq_len)
+        key_norm_inverse = 1 / torch.norm(elu_key, dim=2, p=2)
+        normalized_query_layer = torch.einsum('mnij,mni->mnij', elu_query, query_norm_inverse)
+        # 将key_norm_inverse拓展成和elu_key一样形状的，让elu_key的每个向量都乘以对应的L2 norm进行标准化
+        normalized_key_layer = torch.einsum('mnij,mnj->mnij', elu_key, key_norm_inverse)
+        # (batch,head_num,seq_len,hidden_size)
+        context_layer = torch.matmul(normalized_query_layer,
+                                     torch.matmul(normalized_key_layer, value_layer)) / self.sqrt_attention_head_size
+        # (batch,seq_len,head_num,hidden_size)
+        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        context_layer = context_layer.view(*new_context_layer_shape)
+        hidden_states = self.dense(context_layer)
+        hidden_states = self.out_dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+
+        return hidden_states
+
+
+class Intermediate(nn.Module):
+    """
+    The FFN module:
+    x -> Linear mapping (out:hidden*4) -> ffn_act -> Liner mapping (out:hidden)
+    -> dropout -> Add & Norm
+    """
+
+    def __init__(self, config):
+        super(Intermediate, self).__init__()
+        self.hidden_size = config["hidden_size"]
+        self.ffn_act = config['hidden_act']
+        self.dense_1 = nn.Linear(self.hidden_size, self.hidden_size * 4)
+        self.hidden_dropout_prob = config["hidden_dropout_prob"]
+        if self.ffn_act.lower() == 'gelu':
+            self.intermediate_act_fn = nn.GELU()
+        elif self.ffn_act.lower() == 'relu':
+            self.intermediate_act_fn = nn.ReLU()
+        else:
+            raise ValueError(
+                "{} is not supported as an activation function for FFN".format(self.ffn_act)
+            )
+
+        self.dense_2 = nn.Linear(4 * self.hidden_size, self.hidden_size)
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=1e-12)
+        self.dropout = nn.Dropout(self.hidden_dropout_prob)
+
+    def forward(self, input_tensor):
+        hidden_states = self.dense_1(input_tensor)
+        hidden_states = self.intermediate_act_fn(hidden_states)
+
+        hidden_states = self.dense_2(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+
+        return hidden_states
+
+
+class FrequencyAugExpert(nn.Module):
+    """
+    Frequency Expert:
+    x -> Filter Layer -> Add & Norm -> FFN
+    """
+
+    def __init__(self, config):
+        super(FrequencyAugExpert, self).__init__()
+        self.max_seq_len = config['MAX_ITEM_LIST_LENGTH']
+        self.hidden_size = config["hidden_size"]
+        self.hidden_dropout_prob = config["hidden_dropout_prob"]
+        self.layer_norm_eps = config["layer_norm_eps"]
+        self.complex_weight = nn.Parameter(
+            torch.randn(1, self.max_seq_len // 2 + 1, self.hidden_size, 2, dtype=torch.float32) * 0.02)
+        #-------------Layers for output---------------- -
+        self.out_dropout = nn.Dropout(self.hidden_dropout_prob)
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.ffn = Intermediate(config)
+
+    def filter_layer(self, input_tensor):
+        """
+        对输入的向量进行傅里叶变换 -> 滤波 -> 逆傅里叶变换 -> dropout -> Add & Norm
+        Args:
+            input_tensor: (batch,seq_len,hidden_Size)
+
+        Returns: 滤波后tensor
+
+        """
+        freq_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
+        filter_mat = torch.view_as_complex(self.complex_weight)
+        freq_tensor = freq_tensor * filter_mat
+        time_tensor = torch.fft.irfft(freq_tensor, n=self.max_seq_len, dim=1, norm='ortho')
+        time_tensor = self.out_dropout(time_tensor)
+        return self.LayerNorm(time_tensor + input_tensor)
+
+
+class LinearAttnExperEncoder(FrequencyAugExpert):
+    """
+    Linear Attention Expert:
+    x -> Filtered Attn Layer -> Add & Norm -> FFN
+    """
+
+    def __init__(self, config):
+        super(LinearAttnExperEncoder, self).__init__(config)
+        self.n_heads = config["n_heads"]
+        self.hidden_size = config["hidden_size"]
+        self.hidden_dropout_prob = config["hidden_dropout_prob"]
+        self.layer_norm_eps = config["layer_norm_eps"]
+        self.attn_dropout_prob = config["attn_dropout_prob"]
+        #-------------Layers for encode---------------- -
+        self.attn_encoder = MultiHeadAttention(
+            self.n_heads,
+            self.hidden_size,
+            self.hidden_dropout_prob,
+            self.attn_dropout_prob,
+            self.layer_norm_eps,
+        )
+
+    def forward(self, input_tensor):
+        attn_output = self.attn_encoder(input_tensor)
+        return self.ffn(attn_output)
+
+
+class GRUExpertEncoder(FrequencyAugExpert):
+    """
+
+     """
+
+    def __init__(self, config):
+        super(GRUExpertEncoder, self).__init__(config)
+        self.hidden_size = config["hidden_size"]
+        self.num_layers = config["num_layers"]
+        # 用于处理GRU输入的一维卷积层
+        self.in_dense = nn.Linear(self.hidden_size, self.hidden_size)
+        self.conv1d = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
+        self.selective_gate = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size // 2),
+            nn.SiLU(),
+            nn.Linear(self.hidden_size // 2, self.hidden_size),
+            nn.Dropout(0.3),
+        )
+        self.gru_layers = nn.GRU(
+            input_size=self.hidden_size,
+            hidden_size=self.hidden_size,
+            num_layers=self.num_layers,
+            bias=False,
+            batch_first=True,
+        )
+        self.gru_dense = nn.Linear(self.hidden_size, self.hidden_size)
+        # 用于处理GRU输出的一维卷积层
+        self.conv1dforgru = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
+
+    def forward(self, input_tensor):
+        self.gru_layers.flatten_parameters()
+        x = self.in_dense(input_tensor)
+        x = self.conv1d(x.transpose(1, 2))
+        conv_input = x.transpose(1, 2)
+        #---- calculate gate ----
+        gate = self.selective_gate(conv_input)
+        #---- GRU ----
+        gru_output,_ = self.gru_layers(conv_input)
+        gru_output = self.gru_dense(gru_output)
+        G = gru_output * gate
+        G = self.conv1dforgru(G.transpose(1, 2))
+        G = G.transpose(1, 2)
+        return self.ffn(G)

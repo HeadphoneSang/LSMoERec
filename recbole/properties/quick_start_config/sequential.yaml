@@ -1,5 +1,6 @@
 eval_args:
   split: {'LS': 'valid_and_test'}
   order: TO
-  mode: full
+  mode:  uni100
 repeatable: True
+loss_type: 'CE'                 # (str) The type of loss function. Range in ['BPR', 'CE'].

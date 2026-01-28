@@ -263,6 +263,8 @@ def get_dataloader(config, phase: Literal["train", "valid", "test", "evaluation"
         eval_mode = config["eval_args"]["mode"][phase]
         if eval_mode == "full":
             return FullSortEvalDataLoader
+        elif eval_mode == "fas100":
+            return FastNegSampleEvalDataLoader
         else:
             return NegSampleEvalDataLoader
 
