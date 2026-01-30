@@ -4,6 +4,7 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 
+
 class MultiHeadAttention(nn.Module):
     def __init__(
             self,
@@ -175,6 +176,7 @@ class LinearAttnExperEncoder(FrequencyAugExpert):
         self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.layer_norm_eps = config["layer_norm_eps"]
         self.attn_dropout_prob = config["attn_dropout_prob"]
+        self.position_embedding = nn.Embedding(self.max_seq_len + 1, self.hidden_size)
         #-------------Layers for encode---------------- -
         self.attn_encoder = MultiHeadAttention(
             self.n_heads,
@@ -185,6 +187,11 @@ class LinearAttnExperEncoder(FrequencyAugExpert):
         )
 
     def forward(self, input_tensor):
+        seq_len = input_tensor.shape[1]
+        position_ids = torch.arange(seq_len, device=input_tensor.device)
+        position_embedding = self.position_embedding(position_ids)  #(seq_len,hidden_size)
+        position_embedding = position_embedding.unsqueeze(0)  #(1,seq_len,hidden_size)
+        input_tensor = input_tensor + position_embedding
         attn_output = self.attn_encoder(input_tensor)
         return self.ffn(attn_output)
 
@@ -226,7 +233,7 @@ class GRUExpertEncoder(FrequencyAugExpert):
         #---- calculate gate ----
         gate = self.selective_gate(conv_input)
         #---- GRU ----
-        gru_output,_ = self.gru_layers(conv_input)
+        gru_output, _ = self.gru_layers(conv_input)
         gru_output = self.gru_dense(gru_output)
         G = gru_output * gate
         G = self.conv1dforgru(G.transpose(1, 2))
