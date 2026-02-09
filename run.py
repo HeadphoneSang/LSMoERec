@@ -21,6 +21,7 @@ parameter_dict = {
                   'neg_field': 'neg_sample_ids'},
     'topk': 10,
     'metrics': ['Recall', 'MRR', 'NDCG'],
-    'valid_metric': 'NDCG@10'
+    'valid_metric': 'NDCG@10',
+    'moe_gate_t': 0.5
 }
 run_recbole(model='LSMoERec', dataset='beauty', config_dict=parameter_dict)

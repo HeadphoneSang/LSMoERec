@@ -24,6 +24,7 @@ class LSMoERec(SequentialRecommender):
         self.n_heads = config["n_heads"]
         self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.attn_dropout_prob = config["attn_dropout_prob"]
+        self.moe_gate_t = config["moe_gate_t"]
         # init embedding layer
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
@@ -73,9 +74,94 @@ class LSMoERec(SequentialRecommender):
             if module.bias is not None:
                 torch.nn.init.constant_(module.bias, 0)
 
+    def calculate_moe_gate_dense(self, filtered_resp):
+        """
+        calculate moe's information score by dense
+        Args:
+            filtered_resp: seq_embedding after filtering
+
+        Returns: moe gate score
+        """
+        # (batch,M,seq_len) or (batch,seq_len)
+        moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)
+        # (batch,M) or (batch,)
+        moe_gate = self.moe_proj1(moe_gate).squeeze(-1)
+        return moe_gate
+
+    def expert_shared_FFN(self, expert_output, expert_hidden_gate, input_hidden_state):
+        expert_output = expert_output * expert_hidden_gate
+        expert_output = self.out_dense(expert_output)
+        expert_output = self.moe_out_drop(expert_output)
+        expert_output = self.LayerNorm(expert_output + input_hidden_state)
+        return expert_output
+
+    def output_hidden_filter(self, expert_output):
+        """
+        gating for each user_seq_hidden
+        Args:
+            expert_output: (batch,hidden_size)
+
+        Returns: gated_output (batch,hidden_size)
+
+        """
+        left_dense_output = self.output_gate_proj0(expert_output)
+        right_dense_output = self.output_gate_proj1(expert_output)
+        output_hidden_gate = self.Gelu(left_dense_output)
+        output_gated = output_hidden_gate * right_dense_output
+        output_gated = self.output_gate_projF(output_gated)
+        output_gated = self.final_output_drop(output_gated)
+        return self.LayerNorm(output_gated + expert_output)
+
     def forward(self, item_seq, item_seq_len):
+        """
+        将所有专家的编码解耦的方法
+        Args:
+            item_seq:
+            item_seq_len:
+
+        Returns:
+
+        """
+        # ----- embedding layer -----
         seq_embedding = self.item_embedding(item_seq)
         seq_embedding = self.emb_dropout(seq_embedding)
+        moe_gates = []
+        expert_hidden_gate = self.gate_dense_0(seq_embedding)
+        # gate matrix for each expert's output
+        expert_hidden_gate = self.Gelu(expert_hidden_gate)
+        # MoE Encoding
+        expert_last_res = []
+        # (batch,hidden_size)
+        item_seq_len -= 1
+        batch_ids = torch.arange(item_seq.shape[0], device=item_seq.device)
+        # (batch,1,hidden_size)
+        # item_seq_len = item_seq_len.unsqueeze(-2)
+        for expert in self.experts:
+            # (batch,seq_len_hidden_size)
+            filter_out = expert.filter_layer(seq_embedding)
+            moe_gates.append(self.calculate_moe_gate_dense(filter_out))
+            expert_output = expert(filter_out)
+            expert_output = self.expert_shared_FFN(expert_output, expert_hidden_gate, seq_embedding)
+            # (batch,hidden_size)
+            last_expert_output = expert_output[batch_ids, item_seq_len]
+            expert_last_res.append(last_expert_output)
+        # MoE Gating and aggregation
+        # (batch,M)
+        moe_gates = torch.stack(moe_gates, dim=1)
+        moe_gates = torch.softmax(moe_gates / (self.moe_gate_t + self.layer_norm_eps), dim=1)
+        moe_gates = moe_gates.unsqueeze(-1)
+        # (batch,M,hidden_size)
+        expert_last_res = torch.stack(expert_last_res, dim=1)
+        moe_output = moe_gates * expert_last_res
+        # (batch,hidden_size)
+        moe_output = moe_output.sum(dim=1)
+        return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1)
+
+    def forward_0(self, item_seq, item_seq_len):
+        # ----- embedding layer -----
+        seq_embedding = self.item_embedding(item_seq)
+        seq_embedding = self.emb_dropout(seq_embedding)
+        # 每个专家的自适应滤波后的结果
         filtered_resp = []
         # ------ experts filter------
         for expert in self.experts:
@@ -87,7 +173,9 @@ class LSMoERec(SequentialRecommender):
         # ------ calculate moe gate -------
         moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)  #(batch,M,seq_len)
         moe_gate = self.moe_proj1(moe_gate).squeeze(-1)  #(batch,M)
-        moe_gate = torch.softmax(moe_gate, dim=1).unsqueeze(-1).unsqueeze(-1)  #(batch,M,1,1)
+        # moe_gate_0 = torch.softmax(moe_gate, dim=1)
+        moe_gate = torch.softmax(moe_gate / (self.moe_gate_t + self.layer_norm_eps), dim=1).unsqueeze(-1).unsqueeze(
+            -1)  #(batch,M,1,1)
         # ------ calculate moe output ----
         expert_outputs = []
         for i, expert_encoder in enumerate(self.experts):
@@ -97,6 +185,7 @@ class LSMoERec(SequentialRecommender):
         expert_outputs = torch.stack(expert_outputs, dim=0).permute(1, 0, 2, 3)  #(batch,M,seq_len,hidden_size)
         moe_output = moe_gate * expert_outputs
         moe_output = torch.sum(moe_output, dim=1)
+
         moe_hidden_gate = self.gate_dense_0(seq_embedding)
         moe_hidden_gate = self.Gelu(moe_hidden_gate)
         moe_output = moe_hidden_gate * moe_output
@@ -118,12 +207,25 @@ class LSMoERec(SequentialRecommender):
         output_tensor = self.final_output_drop(self.output_gate_projF(output_gated))
         output_tensor = self.LayerNorm(output_tensor + moe_output)
         seq_output = self.gather_indexes(output_tensor, item_seq_len - 1)
-        return seq_output
+        return seq_output, moe_gate.squeeze(-1).squeeze(-1)
+
+    def calculate_bal_loss(self, moe_gate):
+        """
+        calculate the balance loss for MoE's Gate
+        Args:
+            moe_gate: (batch,M) MoE gate vector for every sequence
+        Returns:
+
+        """
+        E_gate = 1 / torch.tensor(len(self.experts), device=moe_gate.device)
+        mean_gate = torch.mean(moe_gate, dim=0)  #(M,)
+        return torch.sum(torch.pow(mean_gate - E_gate, 2), dim=0)
 
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        seq_output = self.forward(item_seq, item_seq_len)  #(batch,hidden_size)
+        seq_output, moe_gate = self.forward(item_seq, item_seq_len)  #(batch,hidden_size),(batch,M)
+        # bal_loss = self.calculate_bal_loss(moe_gate)
         pos_items = interaction[self.POS_ITEM_ID]
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
@@ -143,7 +245,7 @@ class LSMoERec(SequentialRecommender):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
         test_item = interaction[self.ITEM_ID]
-        seq_output = self.forward(item_seq, item_seq_len)
+        seq_output, _ = self.forward(item_seq, item_seq_len)
         test_item_emb = self.item_embedding(test_item)
         scores = torch.mul(seq_output, test_item_emb).sum(dim=1)  # [B]
         return scores
@@ -162,7 +264,7 @@ class LSMoERec(SequentialRecommender):
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
         pos_item_ids = interaction[self.ITEM_ID]  #(batch,)
         neg_item_ids = interaction[self.NEG_FIELD]  #(batch_size,neg_num)
-        seq_output = self.forward(item_seq, item_seq_len)  #(batch,hidden_size)
+        seq_output, _ = self.forward(item_seq, item_seq_len)  #(batch,hidden_size)
         pos_item_embeds = self.item_embedding(pos_item_ids)  #(batch_size,hidden_size)
         neg_item_embeds = self.item_embedding(neg_item_ids)  #(batch_size,neg_num,hidden_size)
         pos_scores = torch.mul(seq_output, pos_item_embeds).sum(dim=1)
@@ -175,7 +277,7 @@ class LSMoERec(SequentialRecommender):
     def full_sort_predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        seq_output = self.forward(item_seq, item_seq_len)
+        seq_output, _ = self.forward(item_seq, item_seq_len)
         test_items_emb = self.item_embedding.weight
         scores = torch.matmul(
             seq_output, test_items_emb.transpose(0, 1)
