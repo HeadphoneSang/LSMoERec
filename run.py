@@ -22,6 +22,10 @@ parameter_dict = {
     'topk': 10,
     'metrics': ['Recall', 'MRR', 'NDCG'],
     'valid_metric': 'NDCG@10',
-    'moe_gate_t': 0.5
+    'moe_gate_t': 0.5,
+    'align_lambda': 0.1,
+    'mmd_lambda': 1,
+    'kernel_mul': 2,
+    'kernel_num': 5  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
 }
 run_recbole(model='LSMoERec', dataset='beauty', config_dict=parameter_dict)

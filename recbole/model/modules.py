@@ -155,12 +155,12 @@ class FrequencyAugExpert(nn.Module):
         Returns: 滤波后tensor
 
         """
-        freq_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
+        out_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
         filter_mat = torch.view_as_complex(self.complex_weight)
-        freq_tensor = freq_tensor * filter_mat
-        time_tensor = torch.fft.irfft(freq_tensor, n=self.max_seq_len, dim=1, norm='ortho')
-        time_tensor = self.out_dropout(time_tensor)
-        return self.LayerNorm(time_tensor + input_tensor)
+        out_tensor = out_tensor * filter_mat
+        out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
+        out_tensor = self.out_dropout(out_tensor)
+        return self.LayerNorm(out_tensor + input_tensor)
 
 
 class LinearAttnExperEncoder(FrequencyAugExpert):
