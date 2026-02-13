@@ -46,6 +46,8 @@ from recbole.utils import (
     WandbLogger,
 )
 from torch.nn.parallel import DistributedDataParallel
+from recbole.utils.encodeUtils import dict_to_table_str, EventType, emit_event
+from recbole.utils.wechat import send_wecom_robot_msg
 
 
 class AbstractTrainer(object):
@@ -145,6 +147,12 @@ class Trainer(AbstractTrainer):
         self.item_tensor = None
         self.tot_item_num = None
 
+        # WeChat Notification args
+        self.send_status = config['wechat_args']['send_status']
+        self.status_epoch = config['wechat_args']['status_epoch']
+        self.webhook = config['wechat_args']['webhook']
+        self.cur_best_epoch = 0
+
     def _build_optimizer(self, **kwargs):
         r"""Init the Optimizer
 
@@ -164,9 +172,9 @@ class Trainer(AbstractTrainer):
         weight_decay = kwargs.pop("weight_decay", self.weight_decay)
 
         if (
-            self.config["reg_weight"]
-            and weight_decay
-            and weight_decay * self.config["reg_weight"] > 0
+                self.config["reg_weight"]
+                and weight_decay
+                and weight_decay * self.config["reg_weight"] > 0
         ):
             self.logger.warning(
                 "The parameters [weight_decay] and [reg_weight] are specified simultaneously, "
@@ -236,11 +244,6 @@ class Trainer(AbstractTrainer):
         for batch_idx, interaction in enumerate(iter_data):
             interaction = interaction.to(self.device)
             self.optimizer.zero_grad()
-            sync_loss = 0
-            if not self.config["single_spec"]:
-                self.set_reduce_hook()
-                sync_loss = self.sync_grad_loss()
-
             with torch.autocast(device_type=self.device.type, enabled=self.enable_amp):
                 losses = loss_func(interaction)
 
@@ -258,7 +261,7 @@ class Trainer(AbstractTrainer):
                     losses.item() if total_loss is None else total_loss + losses.item()
                 )
             self._check_nan(loss)
-            scaler.scale(loss + sync_loss).backward()
+            scaler.scale(loss).backward()
             if self.clip_grad_norm:
                 clip_grad_norm_(self.model.parameters(), **self.clip_grad_norm)
             scaler.step(self.optimizer)
@@ -348,11 +351,11 @@ class Trainer(AbstractTrainer):
     def _generate_train_loss_output(self, epoch_idx, s_time, e_time, losses):
         des = self.config["loss_decimal_place"] or 4
         train_loss_output = (
-            set_color("epoch %d training", "green")
-            + " ["
-            + set_color("time", "blue")
-            + ": %.2fs, "
-        ) % (epoch_idx, e_time - s_time)
+                                    set_color("epoch %d training", "green")
+                                    + " ["
+                                    + set_color("time", "blue")
+                                    + ": %.2fs, "
+                            ) % (epoch_idx, e_time - s_time)
         if isinstance(losses, tuple):
             des = set_color("train_loss%d", "blue") + ": %." + str(des) + "f"
             train_loss_output += ", ".join(
@@ -393,7 +396,7 @@ class Trainer(AbstractTrainer):
         )
         for k in hparam_dict:
             if hparam_dict[k] is not None and not isinstance(
-                hparam_dict[k], (bool, str, float, int)
+                    hparam_dict[k], (bool, str, float, int)
             ):
                 hparam_dict[k] = str(hparam_dict[k])
 
@@ -402,13 +405,13 @@ class Trainer(AbstractTrainer):
         )
 
     def fit(
-        self,
-        train_data,
-        valid_data=None,
-        verbose=True,
-        saved=True,
-        show_progress=False,
-        callback_fn=None,
+            self,
+            train_data,
+            valid_data=None,
+            verbose=True,
+            saved=True,
+            show_progress=False,
+            callback_fn=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -479,15 +482,15 @@ class Trainer(AbstractTrainer):
                 )
                 valid_end_time = time()
                 valid_score_output = (
-                    set_color("epoch %d evaluating", "green")
-                    + " ["
-                    + set_color("time", "blue")
-                    + ": %.2fs, "
-                    + set_color("valid_score", "blue")
-                    + ": %f]"
-                ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
+                                             set_color("epoch %d evaluating", "green")
+                                             + " ["
+                                             + set_color("time", "blue")
+                                             + ": %.2fs, "
+                                             + set_color("valid_score", "blue")
+                                             + ": %f]"
+                                     ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
                 valid_result_output = (
-                    set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
+                        set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
                 )
                 if verbose:
                     self.logger.info(valid_score_output)
@@ -501,19 +504,30 @@ class Trainer(AbstractTrainer):
                     if saved:
                         self._save_checkpoint(epoch_idx, verbose=verbose)
                     self.best_valid_result = valid_result
+                    self.cur_best_epoch = epoch_idx
 
                 if callback_fn:
                     callback_fn(epoch_idx, valid_score)
 
                 if stop_flag:
                     stop_output = "Finished training, best eval result in epoch %d" % (
-                        epoch_idx - self.cur_step * self.eval_step
+                            epoch_idx - self.cur_step * self.eval_step
                     )
                     if verbose:
                         self.logger.info(stop_output)
                     break
 
                 valid_step += 1
+                if self.send_status and (valid_step % self.status_epoch == 0):
+                    res_dict = {
+                        "cur_epoch": epoch_idx,
+                        "valid_result": valid_result,
+                        "best_valid_result": self.best_valid_result,
+                        "best_valid_epoch": self.cur_best_epoch
+                    }
+                    emit_event(EventType.NOTICE_EVENT, res_dict)
+                    res_str = dict_to_table_str(res_dict)
+                    send_wecom_robot_msg(self.webhook, res_str)
 
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result
@@ -586,7 +600,7 @@ class Trainer(AbstractTrainer):
 
     @torch.no_grad()
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+            self, eval_data, load_best_model=True, model_file=None, show_progress=False
     ):
         r"""Evaluate the model based on the eval data.
 
@@ -715,7 +729,7 @@ class KGTrainer(Trainer):
         if self.train_rec_step is None or self.train_kg_step is None:
             interaction_state = KGDataLoaderState.RSKG
         elif (
-            epoch_idx % (self.train_rec_step + self.train_kg_step) < self.train_rec_step
+                epoch_idx % (self.train_rec_step + self.train_kg_step) < self.train_rec_step
         ):
             interaction_state = KGDataLoaderState.RS
         else:
@@ -824,7 +838,7 @@ class PretrainTrainer(Trainer):
                 )
                 self.save_pretrained_model(epoch_idx, saved_model_file)
                 update_output = (
-                    set_color("Saving current", "blue") + ": %s" % saved_model_file
+                        set_color("Saving current", "blue") + ": %s" % saved_model_file
                 )
                 if verbose:
                     self.logger.info(update_output)
@@ -842,13 +856,13 @@ class S3RecTrainer(PretrainTrainer):
         super(S3RecTrainer, self).__init__(config, model)
 
     def fit(
-        self,
-        train_data,
-        valid_data=None,
-        verbose=True,
-        saved=True,
-        show_progress=False,
-        callback_fn=None,
+            self,
+            train_data,
+            valid_data=None,
+            verbose=True,
+            saved=True,
+            show_progress=False,
+            callback_fn=None,
     ):
         if self.model.train_stage == "pretrain":
             return self.pretrain(train_data, verbose, show_progress)
@@ -1026,7 +1040,7 @@ class DecisionTreeTrainer(AbstractTrainer):
         torch.save(state, self.saved_model_file)
 
     def fit(
-        self, train_data, valid_data=None, verbose=True, saved=True, show_progress=False
+            self, train_data, valid_data=None, verbose=True, saved=True, show_progress=False
     ):
         for epoch_idx in range(self.epochs):
             self._train_at_once(train_data, valid_data)
@@ -1051,15 +1065,15 @@ class DecisionTreeTrainer(AbstractTrainer):
 
                 valid_end_time = time()
                 valid_score_output = (
-                    set_color("epoch %d evaluating", "green")
-                    + " ["
-                    + set_color("time", "blue")
-                    + ": %.2fs, "
-                    + set_color("valid_score", "blue")
-                    + ": %f]"
-                ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
+                                             set_color("epoch %d evaluating", "green")
+                                             + " ["
+                                             + set_color("time", "blue")
+                                             + ": %.2fs, "
+                                             + set_color("valid_score", "blue")
+                                             + ": %f]"
+                                     ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
                 valid_result_output = (
-                    set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
+                        set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
                 )
                 if verbose:
                     self.logger.info(valid_score_output)
@@ -1074,7 +1088,7 @@ class DecisionTreeTrainer(AbstractTrainer):
 
                 if stop_flag:
                     stop_output = "Finished training, best eval result in epoch %d" % (
-                        epoch_idx - self.cur_step * self.eval_step
+                            epoch_idx - self.cur_step * self.eval_step
                     )
                     if self.temp_file:
                         os.remove(self.temp_file)
@@ -1085,7 +1099,7 @@ class DecisionTreeTrainer(AbstractTrainer):
         return self.best_valid_score, self.best_valid_result
 
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+            self, eval_data, load_best_model=True, model_file=None, show_progress=False
     ):
         raise NotImplementedError
 
@@ -1154,7 +1168,7 @@ class XGBoostTrainer(DecisionTreeTrainer):
         self.boost_model = self.temp_file
 
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+            self, eval_data, load_best_model=True, model_file=None, show_progress=False
     ):
         if load_best_model:
             if model_file:
@@ -1216,7 +1230,7 @@ class LightGBMTrainer(DecisionTreeTrainer):
         self.boost_model = self.temp_file
 
     def evaluate(
-        self, eval_data, load_best_model=True, model_file=None, show_progress=False
+            self, eval_data, load_best_model=True, model_file=None, show_progress=False
     ):
         if load_best_model:
             if model_file:
@@ -1244,13 +1258,13 @@ class RaCTTrainer(PretrainTrainer):
         super(RaCTTrainer, self).__init__(config, model)
 
     def fit(
-        self,
-        train_data,
-        valid_data=None,
-        verbose=True,
-        saved=True,
-        show_progress=False,
-        callback_fn=None,
+            self,
+            train_data,
+            valid_data=None,
+            verbose=True,
+            saved=True,
+            show_progress=False,
+            callback_fn=None,
     ):
         if self.model.train_stage == "actor_pretrain":
             return self.pretrain(train_data, verbose, show_progress)
@@ -1319,13 +1333,13 @@ class NCLTrainer(Trainer):
         assert self.num_m_step is not None
 
     def fit(
-        self,
-        train_data,
-        valid_data=None,
-        verbose=True,
-        saved=True,
-        show_progress=False,
-        callback_fn=None,
+            self,
+            train_data,
+            valid_data=None,
+            verbose=True,
+            saved=True,
+            show_progress=False,
+            callback_fn=None,
     ):
         r"""Train the model based on the train data and the valid data.
 
@@ -1373,8 +1387,8 @@ class NCLTrainer(Trainer):
                 if saved:
                     self._save_checkpoint(epoch_idx)
                     update_output = (
-                        set_color("Saving current", "blue")
-                        + ": %s" % self.saved_model_file
+                            set_color("Saving current", "blue")
+                            + ": %s" % self.saved_model_file
                     )
                     if verbose:
                         self.logger.info(update_output)
@@ -1399,15 +1413,15 @@ class NCLTrainer(Trainer):
                 )
                 valid_end_time = time()
                 valid_score_output = (
-                    set_color("epoch %d evaluating", "green")
-                    + " ["
-                    + set_color("time", "blue")
-                    + ": %.2fs, "
-                    + set_color("valid_score", "blue")
-                    + ": %f]"
-                ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
+                                             set_color("epoch %d evaluating", "green")
+                                             + " ["
+                                             + set_color("time", "blue")
+                                             + ": %.2fs, "
+                                             + set_color("valid_score", "blue")
+                                             + ": %f]"
+                                     ) % (epoch_idx, valid_end_time - valid_start_time, valid_score)
                 valid_result_output = (
-                    set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
+                        set_color("valid result", "blue") + ": \n" + dict2str(valid_result)
                 )
                 if verbose:
                     self.logger.info(valid_score_output)
@@ -1418,8 +1432,8 @@ class NCLTrainer(Trainer):
                     if saved:
                         self._save_checkpoint(epoch_idx)
                         update_output = (
-                            set_color("Saving current best", "blue")
-                            + ": %s" % self.saved_model_file
+                                set_color("Saving current best", "blue")
+                                + ": %s" % self.saved_model_file
                         )
                         if verbose:
                             self.logger.info(update_output)
@@ -1430,7 +1444,7 @@ class NCLTrainer(Trainer):
 
                 if stop_flag:
                     stop_output = "Finished training, best eval result in epoch %d" % (
-                        epoch_idx - self.cur_step * self.eval_step
+                            epoch_idx - self.cur_step * self.eval_step
                     )
                     if verbose:
                         self.logger.info(stop_output)

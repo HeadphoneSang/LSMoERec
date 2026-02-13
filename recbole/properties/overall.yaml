@@ -58,5 +58,10 @@ valid_metric_bigger: True       # (bool) Whether to take a bigger valid metric v
 eval_batch_size: 4096          # (int) The evaluation batch size.
 # eval_batch_size: 40960000       # ml-1m
 metric_decimal_place: 4         # (int) The decimal place of metric scores.
+wechat_args:
+  send_result: true
+  send_status: true
+  status_epoch: 20
+  webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=6b65c26a-1314-4708-8fbf-03fa1ecb979e'
 
 

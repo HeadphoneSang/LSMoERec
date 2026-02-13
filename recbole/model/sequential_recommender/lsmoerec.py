@@ -8,7 +8,7 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 from recbole.model.modules import MultiHeadAttention, LinearAttnExperEncoder, GRUExpertEncoder
-
+from recbole.utils.encodeUtils import EventType,EventHandler
 
 class LSMoERec(SequentialRecommender):
     def __init__(self, config, dataset):
@@ -67,6 +67,12 @@ class LSMoERec(SequentialRecommender):
         self.kernel_mul = config['kernel_mul']
         self.kernel_num = config['kernel_num']
         self.align_lambda = config["align_lambda"]
+
+    @EventHandler(EventType.NOTICE_EVENT)
+    def test_notification(self):
+        print("success notification")
+
+
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -240,12 +246,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss + mmd_loss
+            return loss, semantic_ali_loss, mmd_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss + mmd_loss
+            return loss, semantic_ali_loss, mmd_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
