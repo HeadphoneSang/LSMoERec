@@ -46,7 +46,7 @@ def send_wecom_robot_msg(webhook_url, content):
     }
     try:
         response = requests.post(webhook_url, json=data, headers=headers, proxies={"http": None, "https": None})
-        print(response.json())
+        # print(response.json())
     except Exception as e:
         print(f"发送通知失败:\n{e}")
 

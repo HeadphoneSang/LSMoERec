@@ -525,7 +525,7 @@ class Trainer(AbstractTrainer):
                         "best_valid_result": self.best_valid_result,
                         "best_valid_epoch": self.cur_best_epoch
                     }
-                    emit_event(EventType.NOTICE_EVENT, res_dict)
+                    emit_event(EventType.NOTICE_EVENT, res_dict, model=self.model)
                     res_str = dict_to_table_str(res_dict)
                     send_wecom_robot_msg(self.webhook, res_str)
 

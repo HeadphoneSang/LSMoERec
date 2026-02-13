@@ -8,13 +8,22 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 from recbole.model.modules import MultiHeadAttention, LinearAttnExperEncoder, GRUExpertEncoder
-from recbole.utils.encodeUtils import EventType,EventHandler
+from recbole.utils.encodeUtils import EventType, EventHandler
+
+
+@EventHandler(EventType.NOTICE_EVENT)
+def notice_mean_moe_gate(notice_dict, model):
+    notice_dict['moe_gate_avg'] = (
+            model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
+    model.moe_records = None
+
 
 class LSMoERec(SequentialRecommender):
     def __init__(self, config, dataset):
         super(LSMoERec, self).__init__(config, dataset)
 
         # load parameters info
+        self.moe_records = None
         self.hidden_size = config["hidden_size"]
         self.max_seq_len = config['MAX_ITEM_LIST_LENGTH']
         self.loss_type = config["loss_type"]
@@ -68,11 +77,9 @@ class LSMoERec(SequentialRecommender):
         self.kernel_num = config['kernel_num']
         self.align_lambda = config["align_lambda"]
 
-    @EventHandler(EventType.NOTICE_EVENT)
-    def test_notification(self):
-        print("success notification")
-
-
+    # @EventHandler(EventType.NOTICE_EVENT)
+    # def test_notification(self):
+    #     print("success notification")
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -225,7 +232,7 @@ class LSMoERec(SequentialRecommender):
         M = expert_last_res.shape[0]
         # (M,batch,item_n)
         logits = torch.matmul(expert_last_res, test_item_emb.transpose(0, 1))
-        logits = logits.view(-1,logits.shape[-1])
+        logits = logits.view(-1, logits.shape[-1])
         pos_items = pos_items.unsqueeze(0).expand(M, -1).reshape(-1)
         loss = self.loss_fct(logits, pos_items)
         return loss
@@ -236,6 +243,17 @@ class LSMoERec(SequentialRecommender):
         seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len)  #(batch,hidden_size),(batch,M)
         # bal_loss = self.calculate_bal_loss(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
+
+        # record moe_gate_avg
+        if self.moe_records is None:
+            self.moe_records = {
+                'moe_gate_avg': torch.mean(moe_gate, dim=0, keepdim=False).detach(),
+                'accumulative_num': 1
+            }
+        else:
+            self.moe_records['moe_gate_avg'] = self.moe_records['moe_gate_avg'] + torch.mean(moe_gate, dim=0,
+                                                                                             keepdim=False).detach()
+            self.moe_records['accumulative_num'] += 1
         mmd_loss = self.mmd_lambda * self.calculate_MMD(expert_last_res[0], expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
         semantic_ali_loss = self.align_lambda * self.calculate_semantic_ali_loss(expert_last_res, pos_items)
