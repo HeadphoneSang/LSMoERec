@@ -7,15 +7,15 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import MultiHeadAttention, LinearAttnExperEncoder, GRUExpertEncoder
+from recbole.model.modules import MLPExpertEncoder,LinearAttnExperEncoder, GRUExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 
 
-@EventHandler(EventType.NOTICE_EVENT)
-def notice_mean_moe_gate(notice_dict, model):
-    notice_dict['moe_gate_avg'] = (
-            model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
-    model.moe_records = None
+# @EventHandler(EventType.NOTICE_EVENT)
+# def notice_mean_moe_gate(notice_dict, model):
+#     notice_dict['moe_gate_avg'] = (
+#             model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
+#     model.moe_records = None
 
 
 class LSMoERec(SequentialRecommender):
@@ -46,6 +46,9 @@ class LSMoERec(SequentialRecommender):
                 GRUExpertEncoder(config),
             ]
         )
+        # shared expert
+        self.shared_expert = MLPExpertEncoder(config)
+        self.shared_merge_dense = nn.Linear(self.hidden_size * 2, self.hidden_size)
         # init MoE layers
         self.gate_dense_0 = nn.Linear(self.hidden_size, self.hidden_size)
         self.Gelu = nn.GELU()
@@ -167,6 +170,12 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_gates * expert_last_res
         # (batch,hidden_size)
         moe_output = moe_output.sum(dim=1)
+        # shared_expert encoding
+        shared_expert_output = self.shared_expert.filter_layer(seq_embedding)
+        shared_expert_output = self.shared_expert(shared_expert_output)
+        # (batch,hidden_size)
+        shared_expert_output = shared_expert_output[batch_ids, item_seq_len]
+        moe_output = self.shared_merge_dense(torch.cat([shared_expert_output, moe_output],dim=1))
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
     def calculate_bal_loss(self, moe_gate):
