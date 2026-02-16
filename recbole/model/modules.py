@@ -158,7 +158,6 @@ class FrequencyAugExpert(nn.Module):
         out_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
         filter_mat = torch.view_as_complex(self.complex_weight)
         out_tensor = out_tensor * filter_mat
-        del filter_mat
         out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
         out_tensor = self.out_dropout(out_tensor)
         return self.LayerNorm(out_tensor + input_tensor)
@@ -231,16 +230,12 @@ class GRUExpertEncoder(FrequencyAugExpert):
         x = self.in_dense(input_tensor)
         x = self.conv1d(x.transpose(1, 2))
         conv_input = x.transpose(1, 2)
-        del x
         #---- calculate gate ----
         gate = self.selective_gate(conv_input)
         #---- GRU ----
         gru_output, _ = self.gru_layers(conv_input)
         gru_output = self.gru_dense(gru_output)
-        del conv_input
         G = gru_output * gate
-        del gru_output
-        del gate
         G = self.conv1dforgru(G.transpose(1, 2))
         G = G.transpose(1, 2)
         return self.ffn(G)
@@ -264,7 +259,6 @@ class MLPExpertEncoder(FrequencyAugExpert):
             nn.BatchNorm1d(self.hidden_size),
         )
 
-
     def filter_layer(self, input_tensor):
         """
         对输入的向量进行傅里叶变换 -> 滤波 -> 逆傅里叶变换 -> dropout -> Add & Norm
@@ -280,10 +274,7 @@ class MLPExpertEncoder(FrequencyAugExpert):
         pure_fre_output = pure_fre_output.transpose(1, 2)
         pure_fre_output = self.freq_conv_encoder(pure_fre_output)
         user_adaptive_filter = torch.sigmoid(pure_fre_output).transpose(1, 2)
-        del pure_fre_output
         filter_mat = user_adaptive_filter * filter_mat
-        del user_adaptive_filter
-
         #filter
         out_tensor = out_tensor * filter_mat
         out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
@@ -292,4 +283,3 @@ class MLPExpertEncoder(FrequencyAugExpert):
 
     def forward(self, input_tensor):
         return self.ffn(input_tensor)
-
