@@ -33,4 +33,5 @@ parameter_dict = {
 }
 train_valid_result = run_recbole(model='LSMoERec', dataset='beauty', config_dict=parameter_dict)
 res_str = dict_to_table_str(train_valid_result)
-send_wecom_robot_msg(self.webhook, res_str)
+webhook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=6b65c26a-1314-4708-8fbf-03fa1ecb979e'
+send_wecom_robot_msg(webhook, res_str)

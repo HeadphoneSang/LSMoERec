@@ -283,3 +283,12 @@ class MLPExpertEncoder(FrequencyAugExpert):
 
     def forward(self, input_tensor):
         return self.ffn(input_tensor)
+
+
+class UserAdaptiveEncoder(nn.Module):
+    def __init__(self, config):
+        super(UserAdaptiveEncoder, self).__init__()
+        self.hidden_size = config["hidden_size"]
+        self.num_layers = config["num_layers"]
+        self.kernel_size = config["uaf_kernel_size"]
+        self.max_seq_len = config["max_seq_len"]

@@ -47,7 +47,7 @@ class LSMoERec(SequentialRecommender):
             ]
         )
         # shared expert
-        self.shared_expert = MLPExpertEncoder(config)
+        # self.shared_expert = MLPExpertEncoder(config)
         # self.shared_merge_dense = nn.Linear(self.hidden_size * 2, self.hidden_size)
         # init MoE layers
         self.gate_dense_0 = nn.Linear(self.hidden_size, self.hidden_size)
@@ -170,13 +170,6 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_gates * expert_last_res
         # (batch,hidden_size)
         moe_output = moe_output.sum(dim=1)
-        # shared_expert encoding
-        shared_expert_output = self.shared_expert.filter_layer(seq_embedding)
-        shared_expert_output = self.shared_expert(shared_expert_output)
-        # (batch,hidden_size)
-        shared_expert_output = shared_expert_output[batch_ids, item_seq_len]
-        moe_output = moe_output + shared_expert_output
-        # moe_output = self.shared_merge_dense(torch.cat([shared_expert_output, moe_output],dim=1))
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
     def calculate_bal_loss(self, moe_gate):
@@ -253,7 +246,6 @@ class LSMoERec(SequentialRecommender):
         seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len)  #(batch,hidden_size),(batch,M)
         # bal_loss = self.calculate_bal_loss(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
-
         # record moe_gate_avg
         if self.moe_records is None:
             self.moe_records = {
