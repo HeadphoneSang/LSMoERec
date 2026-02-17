@@ -7,7 +7,7 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import MLPExpertEncoder,LinearAttnExperEncoder, GRUExpertEncoder
+from recbole.model.modules import UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 
 
@@ -79,6 +79,8 @@ class LSMoERec(SequentialRecommender):
         self.kernel_mul = config['kernel_mul']
         self.kernel_num = config['kernel_num']
         self.align_lambda = config["align_lambda"]
+        # 共享编码层
+        # self.shared_encoder = UserAdaptiveEncoder(config)
 
     # @EventHandler(EventType.NOTICE_EVENT)
     # def test_notification(self):
@@ -139,6 +141,7 @@ class LSMoERec(SequentialRecommender):
         """
         # ----- embedding layer -----
         seq_embedding = self.item_embedding(item_seq)
+        # seq_embedding = self.shared_encoder(seq_embedding)
         seq_embedding = self.emb_dropout(seq_embedding)
         moe_gates = []
         expert_hidden_gate = self.gate_dense_0(seq_embedding)
@@ -256,7 +259,12 @@ class LSMoERec(SequentialRecommender):
             self.moe_records['moe_gate_avg'] = self.moe_records['moe_gate_avg'] + torch.mean(moe_gate, dim=0,
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
-        mmd_loss = self.mmd_lambda * self.calculate_MMD(expert_last_res[0], expert_last_res[1])
+        # calculate MMD loss
+        filter_amp1 = torch.sqrt(self.experts[0].complex_weight[..., 0]**2 + self.experts[0].complex_weight[..., 1]**2 + self.layer_norm_eps)
+        filter_amp2 = torch.sqrt(self.experts[1].complex_weight[..., 0]**2 + self.experts[1].complex_weight[..., 1]**2 + self.layer_norm_eps)
+        filter_amp1 = filter_amp1.squeeze(0)
+        filter_amp2 = filter_amp2.squeeze(0)
+        mmd_loss = self.mmd_lambda * self.calculate_MMD(filter_amp1,filter_amp2)
         pos_items = interaction[self.POS_ITEM_ID]
         semantic_ali_loss = self.align_lambda * self.calculate_semantic_ali_loss(expert_last_res, pos_items)
         if self.loss_type == "BPR":

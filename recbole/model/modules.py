@@ -292,3 +292,24 @@ class UserAdaptiveEncoder(nn.Module):
         self.num_layers = config["num_layers"]
         self.kernel_size = config["uaf_kernel_size"]
         self.max_seq_len = config["max_seq_len"]
+        self.freq_conv_encoder = nn.Sequential(
+            nn.Conv1d(
+                in_channels=self.hidden_size,
+                out_channels=self.hidden_size,
+                kernel_size=self.kernel_size,
+                padding=self.kernel_size // 2,
+            ),
+            nn.BatchNorm1d(self.hidden_size),
+        )
+        self.layer_norm_eps = config["layer_norm_eps"]
+        self.layer_norm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+
+    def forward(self, input_tensor):
+        out_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
+        pure_fre_output = torch.abs(out_tensor)  # (batch,seq_len/2,hidden_size)
+        pure_fre_output = pure_fre_output.transpose(1, 2)
+        pure_fre_output = self.freq_conv_encoder(pure_fre_output)
+        user_adaptive_filter = torch.sigmoid(pure_fre_output).transpose(1, 2)
+        out_tensor = out_tensor * user_adaptive_filter
+        out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
+        return self.layer_norm(out_tensor + input_tensor)
