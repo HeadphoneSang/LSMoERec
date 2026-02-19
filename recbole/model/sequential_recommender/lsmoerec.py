@@ -9,13 +9,14 @@ from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 from recbole.model.modules import UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
+from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
 
 
-# @EventHandler(EventType.NOTICE_EVENT)
-# def notice_mean_moe_gate(notice_dict, model):
-#     notice_dict['moe_gate_avg'] = (
-#             model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
-#     model.moe_records = None
+@EventHandler(EventType.NOTICE_EVENT)
+def notice_mean_moe_gate(notice_dict, model):
+    notice_dict['moe_gate_avg'] = (
+            model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
+    model.moe_records = None
 
 
 class LSMoERec(SequentialRecommender):
@@ -78,7 +79,9 @@ class LSMoERec(SequentialRecommender):
         self.mmd_lambda = config["mmd_lambda"]
         self.kernel_mul = config['kernel_mul']
         self.kernel_num = config['kernel_num']
+        self.MMD_loss = MMDLoss(self.kernel_mul, self.kernel_num)
         self.align_lambda = config["align_lambda"]
+        self.align_loss = ExpertsSemanticAlignLoss(self.item_embedding)
         # 共享编码层
         # self.shared_encoder = UserAdaptiveEncoder(config)
 
@@ -175,79 +178,11 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_output.sum(dim=1)
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
-    def calculate_bal_loss(self, moe_gate):
-        """
-        calculate the balance loss for MoE's Gate
-        Args:
-            moe_gate: (batch,M) MoE gate vector for every sequence
-        Returns:
-
-        """
-        E_gate = 1 / torch.tensor(len(self.experts), device=moe_gate.device)
-        mean_gate = torch.mean(moe_gate, dim=0)  #(M,)
-        return torch.sum(torch.pow(mean_gate - E_gate, 2), dim=0)
-
-    def calculate_MMD(self, sample_a, sample_b, fix_bw=None):
-        """
-        calculate mmd from sample_a and sample_b
-        Args:
-            sample_a: (batch,hidden_size)
-            sample_b: (batch,hidden_size)
-
-        Returns: loss_item
-        """
-        batch_size = sample_a.shape[0]
-        # distance matrices
-        XX = torch.cdist(sample_a, sample_a, p=2) ** 2
-        YY = torch.cdist(sample_b, sample_b, p=2) ** 2
-        XY = torch.cdist(sample_a, sample_b, p=2) ** 2
-
-        # remove diagonal for unbiased estimate
-        mask = ~torch.eye(batch_size, dtype=torch.bool, device=sample_a.device)
-        XX = XX[mask]
-        YY = YY[mask]
-        XY = XY.view(-1)
-        # adaptive bandwidth
-        # mean bandwidth
-        # bandwidth = ((XX.sum() + YY.sum() + XY.sum()) / (XX.numel() + YY.numel() + XY.numel())).detach()
-        #median bandwidth
-        if fix_bw:
-            bandwidth = fix_bw
-        else:
-            bandwidth = torch.median(torch.cat([XX, YY, XY])).detach()
-        bandwidth /= self.kernel_mul ** (self.kernel_num // 2)
-        bandwidth_list = [bandwidth * (self.kernel_mul ** i) for i in range(self.kernel_num)]
-
-        # multi-kernel RBF, mean over batch directly to save memory
-        XX = sum(torch.exp(-XX / bw).mean() for bw in bandwidth_list)
-        YY = sum(torch.exp(-YY / bw).mean() for bw in bandwidth_list)
-        XY = sum(torch.exp(-XY / bw).mean() for bw in bandwidth_list)
-
-        loss_item = XX + YY - 2 * XY
-        return loss_item
-
-    def calculate_semantic_ali_loss(self, expert_last_res, pos_items):
-        """
-        calculate the align loss of MoE
-        Args:
-            expert_last_res: (M,batch_size,hidden_size)
-            pos_items: (batch)
-        Returns: loss_item
-        """
-        test_item_emb = self.item_embedding.weight  #(item_n,hidden_size)
-        M = expert_last_res.shape[0]
-        # (M,batch,item_n)
-        logits = torch.matmul(expert_last_res, test_item_emb.transpose(0, 1))
-        logits = logits.view(-1, logits.shape[-1])
-        pos_items = pos_items.unsqueeze(0).expand(M, -1).reshape(-1)
-        loss = self.loss_fct(logits, pos_items)
-        return loss
-
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
         seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len)  #(batch,hidden_size),(batch,M)
-        # bal_loss = self.calculate_bal_loss(moe_gate)
+        # bal_loss = self.bal_loss_fct(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
         # record moe_gate_avg
         if self.moe_records is None:
@@ -260,13 +195,9 @@ class LSMoERec(SequentialRecommender):
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
         # calculate MMD loss
-        filter_amp1 = torch.sqrt(self.experts[0].complex_weight[..., 0]**2 + self.experts[0].complex_weight[..., 1]**2 + self.layer_norm_eps)
-        filter_amp2 = torch.sqrt(self.experts[1].complex_weight[..., 0]**2 + self.experts[1].complex_weight[..., 1]**2 + self.layer_norm_eps)
-        filter_amp1 = filter_amp1.squeeze(0)
-        filter_amp2 = filter_amp2.squeeze(0)
-        mmd_loss = self.mmd_lambda * self.calculate_MMD(filter_amp1,filter_amp2)
+        mmd_loss = self.mmd_lambda * self.MMD_loss(expert_last_res[0],expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
-        semantic_ali_loss = self.align_lambda * self.calculate_semantic_ali_loss(expert_last_res, pos_items)
+        semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
             pos_items_emb = self.item_embedding(pos_items)

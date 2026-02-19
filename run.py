@@ -27,7 +27,6 @@ parameter_dict = {
     'moe_gate_t': 0.5,
     'align_lambda': 0.1,
     'mmd_lambda': -0.1,
-    'uaf_kernel_size':3,
     'kernel_mul': 2,
     'kernel_num': 2  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
 }
