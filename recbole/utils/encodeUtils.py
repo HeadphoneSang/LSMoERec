@@ -12,6 +12,7 @@ _event_handlers = defaultdict(list)
 class EventType(Enum):
     """事件类型枚举"""
     NOTICE_EVENT = auto()
+    CHECKPOINT_EVENT = auto()
 
 
 class EventHandler:

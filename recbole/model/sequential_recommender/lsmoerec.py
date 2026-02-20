@@ -4,19 +4,46 @@ import numpy as np
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, xavier_normal_
-
+import os
+import uuid
+from datetime import datetime
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
 from recbole.model.modules import UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
-
+from recbole.utils.utils import append_line
 
 @EventHandler(EventType.NOTICE_EVENT)
 def notice_mean_moe_gate(notice_dict, model):
     notice_dict['moe_gate_avg'] = (
             model.moe_records['moe_gate_avg'] / model.moe_records['accumulative_num']).cpu().tolist()
     model.moe_records = None
+
+
+_tarfile = None
+
+
+@EventHandler(EventType.CHECKPOINT_EVENT)
+def save_pooled_filters(model):
+    global _tarfile
+    if _tarfile is None:
+        root_file = "log_filters"
+        os.makedirs(root_file, exist_ok=True)
+        # 生成文件名：时间戳 + 5位UUID
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        short_uuid = uuid.uuid4().hex[:5]
+        filename = f"{timestamp}-{short_uuid}.log"
+        # 完整路径
+        full_path = os.path.join(root_file, filename)
+        _tarfile = full_path
+    experts_filters = []
+    for expert in model.experts:
+        e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
+            ..., 1] ** 2 + model.layer_norm_eps)
+        experts_filters.append(torch.mean(e_filter, dim=-1).squeeze(0).cpu().tolist())
+    append_line(_tarfile, str(experts_filters))
+    return experts_filters
 
 
 class LSMoERec(SequentialRecommender):
@@ -197,13 +224,13 @@ class LSMoERec(SequentialRecommender):
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
         #calculate NCE loss
-        experts_filter = []
-        for expert in self.experts:
-            e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
-                ..., 1] ** 2 + self.layer_norm_eps)
-            experts_filter.append(e_filter)
-        experts_filter = torch.cat(experts_filter, dim=0)
-        spec_loss = self.spec_lambda * self.expert_spec_loss(experts_filter)
+        # experts_filter = []
+        # for expert in self.experts:
+        #     e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
+        #         ..., 1] ** 2 + self.layer_norm_eps)
+        #     experts_filter.append(e_filter)
+        # experts_filter = torch.cat(experts_filter, dim=0)
+        # spec_loss = self.spec_lambda * self.expert_spec_loss(experts_filter)
         # calculate MMD loss
         # mmd_loss = self.mmd_lambda * self.MMD_loss(expert_last_res[0],expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
@@ -215,12 +242,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss, spec_loss
+            return loss, semantic_ali_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss, spec_loss
+            return loss, semantic_ali_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]

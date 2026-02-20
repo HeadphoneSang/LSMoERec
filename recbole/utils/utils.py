@@ -25,7 +25,6 @@ import torch.nn as nn
 from torch.utils.tensorboard import SummaryWriter
 from texttable import Texttable
 
-
 from recbole.utils.enum_type import ModelType
 
 
@@ -241,8 +240,8 @@ def get_gpu_usage(device=None):
         str: it contains the info about reserved memory and total memory of given device.
     """
 
-    reserved = torch.cuda.max_memory_reserved(device) / 1024**3
-    total = torch.cuda.get_device_properties(device).total_memory / 1024**3
+    reserved = torch.cuda.max_memory_reserved(device) / 1024 ** 3
+    total = torch.cuda.get_device_properties(device).total_memory / 1024 ** 3
 
     return "{:.2f} G/{:.2f} G".format(reserved, total)
 
@@ -352,7 +351,7 @@ def get_flops(model, dataset, device, logger, transform, verbose=False):
         for n, m in module.named_children():
             next_dict = {}
             if m in handler_collection and not isinstance(
-                m, (nn.Sequential, nn.ModuleList)
+                    m, (nn.Sequential, nn.ModuleList)
             ):
                 m_ops, m_params = m.total_ops.item(), m.total_params.item()
             else:
@@ -424,8 +423,8 @@ def get_environment(config):
 
     import psutil
 
-    memory_used = psutil.Process(os.getpid()).memory_info().rss / 1024**3
-    memory_total = psutil.virtual_memory()[0] / 1024**3
+    memory_used = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 3
+    memory_total = psutil.virtual_memory()[0] / 1024 ** 3
     memory_usage = "{:.2f} G/{:.2f} G".format(memory_used, memory_total)
     cpu_usage = "{:.2f} %".format(psutil.cpu_percent(interval=1))
     """environment_data = [
@@ -447,3 +446,14 @@ def get_environment(config):
     )
 
     return table
+
+
+def append_line(file_path: str, text: str):
+    """
+    向指定文件追加一行字符串，每次自动换行
+    Args:
+        file_path: 文件路径
+        text: 要追加的字符串
+    """
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(text + "\n")

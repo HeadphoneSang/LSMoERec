@@ -1,52 +1,52 @@
-from recbole.model.loss import KLInfoNCE
-import torch
-if __name__ == "__main__":
-    # ============= 1. 生成测试样本 =============
-    # 定义输入维度（模拟真实场景：K个专家，seq_len//2=8，hidden_size=16）
-    K = 4  # 专家数量
-    seq_half = 8  # seq_len//2
-    hidden_size = 16  # 专家特征维度
+import numpy as np
+import matplotlib.pyplot as plt
 
-    # 场景1：随机样本（模拟训练中的普通情况）
-    torch.manual_seed(42)  # 固定随机种子，保证结果可复现
-    random_experts = torch.randn(K, seq_half, hidden_size)  # 正态分布随机数
+# 设置中文字体（避免乱码）
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
 
-    # 场景2：极端样本1（所有专家分布完全相同，预期损失接近0）
-    same_experts = torch.ones(K, seq_half, hidden_size) * 0.5  # 所有值相同，softmax后分布一致
+# 原始数据
+data = [0.19011139869689941, 0.21995487809181213, 0.2116008996963501, 0.20335936546325684, 0.18563802540302277, 0.184248149394989, 0.1806657910346985, 0.17047153413295746, 0.1705503761768341, 0.16544455289840698, 0.1593887358903885, 0.16110292077064514, 0.15800538659095764, 0.1560528427362442, 0.1599225103855133, 0.15214133262634277, 0.1609732061624527, 0.15515784919261932, 0.1503400355577469, 0.15552590787410736, 0.14920629560947418, 0.15425659716129303, 0.15268144011497498, 0.1549234390258789, 0.15758740901947021, 0.15712320804595947, 0.1491696685552597, 0.15231868624687195, 0.15456938743591309, 0.15431109070777893, 0.1543445885181427, 0.15438668429851532, 0.15484577417373657, 0.15507739782333374, 0.15745124220848083, 0.15491516888141632, 0.1523597538471222, 0.15303999185562134, 0.15008217096328735, 0.15393030643463135, 0.15255525708198547, 0.15694889426231384, 0.15947920083999634, 0.16928385198116302, 0.161640465259552, 0.154263436794281, 0.16581399738788605, 0.1624535173177719, 0.16876336932182312, 0.14910888671875, 0.1414300799369812]
+# 步骤1：转换为numpy数组，方便计算
+data_np = np.array(data)
 
-    # 场景3：极端样本2（专家分布完全不同，预期损失较大）
-    diff_experts = torch.zeros(K, seq_half, hidden_size)
-    for i in range(K):
-        diff_experts[i, i, :] = 10.0  # 每个专家只在第i列有大值，softmax后分布完全分离
+# 步骤2：用IQR法计算极值阈值
+Q1 = np.percentile(data_np, 25)  # 第一四分位数
+Q3 = np.percentile(data_np, 75)  # 第三四分位数
+IQR = Q3 - Q1                    # 四分位距
+lower_bound = Q1 - 1.5 * IQR     # 下限（小于此值为极值）
+upper_bound = Q3 + 1.5 * IQR     # 上限（大于此值为极值）
 
-    # ============= 2. 初始化损失函数 =============
-    loss_fn = KLInfoNCE(temp=0.5)  # 温度系数设0.5（行业常用值）
+# 步骤3：过滤极值
+data_filtered = data_np[(data_np >= lower_bound) & (data_np <= upper_bound)]
 
-    # ============= 3. 计算并验证损失 =============
-    print("=" * 50)
-    # 测试随机样本
-    loss_random = loss_fn(random_experts)
-    print(f"【随机样本】损失值：{loss_random.item():.4f}")
+# 步骤4：绘图（原始数据+去极值后数据对比）
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
 
-    # 测试所有专家分布相同的样本
-    loss_same = loss_fn(same_experts)
-    print(f"【所有专家分布相同】损失值：{loss_same.item():.4f}")
+# 子图1：原始数据
+ax1.plot(data_np, 'o-', color='#FF6B6B', label='原始数据', markersize=6)
+ax1.axhline(y=upper_bound, color='#4ECDC4', linestyle='--', label=f'上限阈值({upper_bound:.3f})')
+ax1.axhline(y=lower_bound, color='#45B7D1', linestyle='--', label=f'下限阈值({lower_bound:.3f})')
+ax1.set_title('原始数据（含极值）', fontsize=14, fontweight='bold')
+ax1.set_ylabel('数值', fontsize=12)
+ax1.legend(loc='upper right')
+ax1.grid(alpha=0.3)
 
-    # 测试所有专家分布完全不同的样本
-    loss_diff = loss_fn(diff_experts)
-    print(f"【所有专家分布完全不同】损失值：{loss_diff.item():.4f}")
+# 子图2：去极值后的数据
+ax2.plot(data_filtered, 'o-', color='#96CEB4', label='去极值后数据', markersize=6)
+ax2.set_title('去极值后的数据', fontsize=14, fontweight='bold')
+ax2.set_xlabel('数据索引', fontsize=12)
+ax2.set_ylabel('数值', fontsize=12)
+ax2.legend(loc='upper right')
+ax2.grid(alpha=0.3)
 
-    # ============= 4. 反向传播测试（验证梯度有效性） =============
-    print("=" * 50)
-    # 随机样本需要计算梯度，所以克隆并设requires_grad=True
-    test_input = random_experts.clone().requires_grad_(True)
-    loss = loss_fn(test_input)
-    loss.backward()  # 反向传播
+# 调整子图间距
+plt.tight_layout()
+# 显示图表
+plt.show()
 
-    # 检查梯度是否存在（非None且非全0）
-    grad_norm = torch.norm(test_input.grad)
-    print(f"反向传播验证：梯度范数 = {grad_norm.item():.4f}")
-    if grad_norm > 0:
-        print("✅ 梯度计算正常，可用于训练")
-    else:
-        print("❌ 梯度为0，损失函数可能存在问题")
+# 打印关键信息
+print(f"原始数据数量：{len(data_np)}")
+print(f"去极值后数据数量：{len(data_filtered)}")
+print(f"极值阈值：下限={lower_bound:.3f}，上限={upper_bound:.3f}")
+print(f"被剔除的极值：{data_np[(data_np < lower_bound) | (data_np > upper_bound)]}")

@@ -505,6 +505,7 @@ class Trainer(AbstractTrainer):
                         self._save_checkpoint(epoch_idx, verbose=verbose)
                     self.best_valid_result = valid_result
                     self.cur_best_epoch = epoch_idx
+                    emit_event(EventType.CHECKPOINT_EVENT, self.model)
 
                 if callback_fn:
                     callback_fn(epoch_idx, valid_score)
