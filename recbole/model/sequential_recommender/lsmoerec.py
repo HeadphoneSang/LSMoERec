@@ -14,6 +14,7 @@ from recbole.utils.encodeUtils import EventType, EventHandler
 from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
 from recbole.utils.utils import append_line
 
+
 @EventHandler(EventType.NOTICE_EVENT)
 def notice_mean_moe_gate(notice_dict, model):
     notice_dict['moe_gate_avg'] = (
@@ -104,11 +105,12 @@ class LSMoERec(SequentialRecommender):
         self.NEG_FIELD = config['eval_args']['neg_field']
         # 用于辅助损失的超参数
         # self.mmd_lambda = config["mmd_lambda"]
-        # self.kernel_mul = config['kernel_mul']
-        # self.kernel_num = config['kernel_num']
+        self.kernel_mul = config['kernel_mul']
+        self.kernel_num = config['kernel_num']
         # self.MMD_loss = MMDLoss(self.kernel_mul, self.kernel_num)
         self.spec_lambda = config["spec_lambda"]
-        self.expert_spec_loss = KLInfoNCE()
+        # self.expert_spec_loss = KLInfoNCE(temp=1.0)
+        self.expert_spec_loss = MMDLoss(self.kernel_mul, self.kernel_num)
         self.align_lambda = config["align_lambda"]
         self.align_loss = ExpertsSemanticAlignLoss(self.item_embedding)
         # 共享编码层
@@ -223,14 +225,14 @@ class LSMoERec(SequentialRecommender):
             self.moe_records['moe_gate_avg'] = self.moe_records['moe_gate_avg'] + torch.mean(moe_gate, dim=0,
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
-        #calculate NCE loss
-        # experts_filter = []
-        # for expert in self.experts:
-        #     e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
-        #         ..., 1] ** 2 + self.layer_norm_eps)
-        #     experts_filter.append(e_filter)
-        # experts_filter = torch.cat(experts_filter, dim=0)
-        # spec_loss = self.spec_lambda * self.expert_spec_loss(experts_filter)
+        # calculate NCE loss
+        experts_filter = []
+        for expert in self.experts:
+            e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
+                ..., 1] ** 2 + self.layer_norm_eps)
+            experts_filter.append(e_filter)
+        # experts_filter = torch.cat(experts_filter, dim=0)  #(K,L/2,H)
+        spec_loss = -1 * self.spec_lambda * self.expert_spec_loss(experts_filter[0].squeeze(0), experts_filter[1].squeeze(0))
         # calculate MMD loss
         # mmd_loss = self.mmd_lambda * self.MMD_loss(expert_last_res[0],expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
@@ -242,12 +244,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, spec_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, spec_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]

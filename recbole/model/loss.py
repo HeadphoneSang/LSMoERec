@@ -116,6 +116,7 @@ class KLInfoNCE(nn.Module):
 
     def forward(self, experts_filters):
         """
+        sum
         calculate experts division InfoNCE by KL function
         Args:
             experts_filters: (K,seq_len//2,hidden_size)
@@ -124,6 +125,7 @@ class KLInfoNCE(nn.Module):
 
         """
         # (K,seq_len//2)
+        K = experts_filters.shape[0]
         H = torch.mean(experts_filters, dim=-1)
         A = torch.softmax(H, dim=1)
         A = A + 1e-12
@@ -131,14 +133,41 @@ class KLInfoNCE(nn.Module):
         # (K,1)
         KL_0 = torch.sum(A * log_A, dim=1, keepdim=True)
         KL_1 = torch.matmul(A, log_A.T)
-        # (K,K)
+        # (K,K) KL matrix
         KL = KL_0 - KL_1
-        KL_N = torch.exp(-1.0 * (KL / self.temp))
-        self_mask = torch.eye(KL.shape[0], dtype=torch.bool, device=KL.device)
-        # (K,)
-        KL_N = torch.sum(torch.masked_fill(KL_N, self_mask, 0.), dim=1) + 1
-        log_KL = -1.0 * torch.log(1.0 / KL_N).mean()
-        return log_KL
+        mask = ~torch.eye(K, dtype=torch.bool, device=KL.device)
+        masked_KL = KL[mask].view(K, -1)  #(K,K-1)
+        log_KL = torch.log(masked_KL + 1)  # 防止单个KL对数值爆炸
+        loss = 1.0 / torch.sum(log_KL, dim=1)
+        loss = torch.mean(loss, dim=0)
+        return loss
+
+    # def forward(self, experts_filters):
+    #     """
+    #     info nce
+    #     calculate experts division InfoNCE by KL function
+    #     Args:
+    #         experts_filters: (K,seq_len//2,hidden_size)
+    #
+    #     Returns: loss_item
+    #
+    #     """
+    #     # (K,seq_len//2)
+    #     H = torch.mean(experts_filters, dim=-1)
+    #     A = torch.softmax(H, dim=1)
+    #     A = A + 1e-12
+    #     log_A = torch.log(A)
+    #     # (K,1)
+    #     KL_0 = torch.sum(A * log_A, dim=1, keepdim=True)
+    #     KL_1 = torch.matmul(A, log_A.T)
+    #     # (K,K)
+    #     KL = KL_0 - KL_1
+    #     KL_N = torch.exp(-1.0 * (KL / self.temp))
+    #     self_mask = torch.eye(KL.shape[0], dtype=torch.bool, device=KL.device)
+    #     # (K,)
+    #     KL_N = torch.sum(torch.masked_fill(KL_N, self_mask, 0.), dim=1) + 1
+    #     log_KL = -1.0 * torch.log(1.0 / KL_N).mean()
+    #     return log_KL
 
 
 class BPRLoss(nn.Module):

@@ -160,8 +160,8 @@ class FrequencyAugExpert(nn.Module):
         out_tensor = out_tensor * filter_mat
         out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
         # out_tensor = self.out_dropout(out_tensor)
-        # return self.LayerNorm(out_tensor + input_tensor)
-        return self.LayerNorm(out_tensor)
+        return self.LayerNorm(out_tensor + input_tensor)
+        # return self.LayerNorm(out_tensor)
 
 class LinearAttnExperEncoder(FrequencyAugExpert):
     """

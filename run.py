@@ -27,9 +27,9 @@ parameter_dict = {
     'moe_gate_t': 0.5,
     'align_lambda': 0.1,
     'mmd_lambda': -0.1,
-    'spec_lambda': 0.1,
+    'spec_lambda': 0.01,
     'kernel_mul': 2,
-    'kernel_num': 2  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
+    'kernel_num': 5  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
 }
 train_valid_result = run_recbole(model='LSMoERec', dataset='beauty', config_dict=parameter_dict)
 res_str = dict_to_table_str(train_valid_result)
