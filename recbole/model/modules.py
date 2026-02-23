@@ -3,9 +3,10 @@ import math
 import numpy as np
 from torch import nn
 import torch.nn.functional as F
+from recbole.model.layers import MultiHeadAttention
 
 
-class MultiHeadAttention(nn.Module):
+class LinearMultiHeadAttention(nn.Module):
     def __init__(
             self,
             n_heads,
@@ -14,7 +15,7 @@ class MultiHeadAttention(nn.Module):
             attn_dropout_prob,
             layer_norm_eps,
     ):
-        super(MultiHeadAttention, self).__init__()
+        super(LinearMultiHeadAttention, self).__init__()
         if hidden_size % n_heads != 0:
             raise ValueError(
                 "The hidden size (%d) is not a multiple of the number of attention "
@@ -25,7 +26,6 @@ class MultiHeadAttention(nn.Module):
         self.attention_head_size = int(hidden_size / n_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
         self.sqrt_attention_head_size = math.sqrt(self.attention_head_size)
-
         self.query = nn.Linear(hidden_size, self.all_head_size)
         self.key = nn.Linear(hidden_size, self.all_head_size)
         self.value = nn.Linear(hidden_size, self.all_head_size)
@@ -159,9 +159,44 @@ class FrequencyAugExpert(nn.Module):
         filter_mat = torch.view_as_complex(self.complex_weight)
         out_tensor = out_tensor * filter_mat
         out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
-        # out_tensor = self.out_dropout(out_tensor)
+        out_tensor = self.out_dropout(out_tensor)
         return self.LayerNorm(out_tensor + input_tensor)
         # return self.LayerNorm(out_tensor)
+
+
+class AttnExperEncoder(FrequencyAugExpert):
+    """
+    Linear Attention Expert:
+    x -> Filtered Attn Layer -> Add & Norm -> FFN
+    """
+
+    def __init__(self, config):
+        super(AttnExperEncoder, self).__init__(config)
+        self.n_heads = config["n_heads"]
+        self.hidden_size = config["hidden_size"]
+        self.hidden_dropout_prob = config["hidden_dropout_prob"]
+        self.layer_norm_eps = config["layer_norm_eps"]
+        self.attn_dropout_prob = config["attn_dropout_prob"]
+        self.position_embedding = nn.Embedding(self.max_seq_len + 1, self.hidden_size)
+        #-------------Layers for encode---------------- -
+        self.attn_encoder = MultiHeadAttention(
+            self.n_heads,
+            self.hidden_size,
+            self.hidden_dropout_prob,
+            self.attn_dropout_prob,
+            self.layer_norm_eps,
+        )
+
+    def forward(self, input_tensor, attention_mask):
+        seq_len = input_tensor.shape[1]
+        position_ids = torch.arange(seq_len, device=input_tensor.device)
+        position_embedding = self.position_embedding(position_ids)  #(seq_len,hidden_size)
+        position_embedding = position_embedding.unsqueeze(0)  #(1,seq_len,hidden_size)
+        input_tensor = input_tensor + position_embedding
+        # 创建注意力掩码矩阵
+        attn_output = self.attn_encoder(input_tensor, attention_mask)
+        return self.ffn(attn_output)
+
 
 class LinearAttnExperEncoder(FrequencyAugExpert):
     """
@@ -178,7 +213,7 @@ class LinearAttnExperEncoder(FrequencyAugExpert):
         self.attn_dropout_prob = config["attn_dropout_prob"]
         self.position_embedding = nn.Embedding(self.max_seq_len + 1, self.hidden_size)
         #-------------Layers for encode---------------- -
-        self.attn_encoder = MultiHeadAttention(
+        self.attn_encoder = LinearMultiHeadAttention(
             self.n_heads,
             self.hidden_size,
             self.hidden_dropout_prob,
@@ -248,38 +283,38 @@ class MLPExpertEncoder(FrequencyAugExpert):
         self.num_layers = config["num_layers"]
         self.kernel_size = config["uaf_kernel_size"]
         # conv1d for frequency_input_embeddings
-        # UAF
-        self.freq_conv_encoder = nn.Sequential(
-            nn.Conv1d(
-                in_channels=self.hidden_size,
-                out_channels=self.hidden_size,
-                kernel_size=self.kernel_size,
-                padding=self.kernel_size // 2,
-            ),
-            nn.BatchNorm1d(self.hidden_size),
-        )
+        # # UAF
+        # self.freq_conv_encoder = nn.Sequential(
+        #     nn.Conv1d(
+        #         in_channels=self.hidden_size,
+        #         out_channels=self.hidden_size,
+        #         kernel_size=self.kernel_size,
+        #         padding=self.kernel_size // 2,
+        #     ),
+        #     nn.BatchNorm1d(self.hidden_size),
+        # )
 
-    def filter_layer(self, input_tensor):
-        """
-        对输入的向量进行傅里叶变换 -> 滤波 -> 逆傅里叶变换 -> dropout -> Add & Norm
-        Args:
-            input_tensor: (batch,seq_len,hidden_Size
-        Returns: 滤波后tensor
-        """
-        out_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
-        filter_mat = torch.view_as_complex(self.complex_weight)
+        # def filter_layer(self, input_tensor):
+        #     """
+        #     对输入的向量进行傅里叶变换 -> 滤波 -> 逆傅里叶变换 -> dropout -> Add & Norm
+        #     Args:
+        #         input_tensor: (batch,seq_len,hidden_Size
+        #     Returns: 滤波后tensor
+        #     """
+        # out_tensor = torch.fft.rfft(input_tensor, dim=1, norm='ortho')
+        # filter_mat = torch.view_as_complex(self.complex_weight)
         # frequency filter
         #calculate user_adaptive filter
-        pure_fre_output = torch.abs(out_tensor)  # (batch,seq_len/2,hidden_size)
-        pure_fre_output = pure_fre_output.transpose(1, 2)
-        pure_fre_output = self.freq_conv_encoder(pure_fre_output)
-        user_adaptive_filter = torch.sigmoid(pure_fre_output).transpose(1, 2)
-        filter_mat = user_adaptive_filter * filter_mat
+        # pure_fre_output = torch.abs(out_tensor)  # (batch,seq_len/2,hidden_size)
+        # pure_fre_output = pure_fre_output.transpose(1, 2)
+        # pure_fre_output = self.freq_conv_encoder(pure_fre_output)
+        # user_adaptive_filter = torch.sigmoid(pure_fre_output).transpose(1, 2)
+        # filter_mat = user_adaptive_filter * filter_mat
         #filter
-        out_tensor = out_tensor * filter_mat
-        out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
-        out_tensor = self.out_dropout(out_tensor)
-        return self.LayerNorm(out_tensor + input_tensor)
+        # out_tensor = out_tensor * filter_mat
+        # out_tensor = torch.fft.irfft(out_tensor, n=self.max_seq_len, dim=1, norm='ortho')
+        # out_tensor = self.out_dropout(out_tensor)
+        # return self.LayerNorm(out_tensor + input_tensor)
 
     def forward(self, input_tensor):
         return self.ffn(input_tensor)

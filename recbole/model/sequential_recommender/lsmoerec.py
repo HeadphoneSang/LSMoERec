@@ -9,7 +9,8 @@ import uuid
 from datetime import datetime
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder
+from recbole.model.modules import AttnExperEncoder, UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder, \
+    MLPExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
 from recbole.utils.utils import append_line
@@ -192,7 +193,12 @@ class LSMoERec(SequentialRecommender):
             # (batch,seq_len_hidden_size)
             filter_out = expert.filter_layer(seq_embedding)
             moe_gates.append(self.calculate_moe_gate_dense(filter_out))
-            expert_output = expert(filter_out)
+            expert_output = None
+            if isinstance(expert, AttnExperEncoder):
+                attention_mask = self.get_attention_mask(item_seq, bidirectional=False)
+                expert_output = expert(filter_out, attention_mask)
+            else:
+                expert_output = expert(filter_out)
             expert_output = self.expert_shared_FFN(expert_output, expert_hidden_gate, seq_embedding)
             # (batch,hidden_size)
             last_expert_output = expert_output[batch_ids, item_seq_len]
@@ -226,13 +232,13 @@ class LSMoERec(SequentialRecommender):
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
         # calculate NCE loss
-        experts_filter = []
-        for expert in self.experts:
-            e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
-                ..., 1] ** 2 + self.layer_norm_eps)
-            experts_filter.append(e_filter)
-        # experts_filter = torch.cat(experts_filter, dim=0)  #(K,L/2,H)
-        spec_loss = -1 * self.spec_lambda * self.expert_spec_loss(experts_filter[0].squeeze(0), experts_filter[1].squeeze(0))
+        # experts_filter = []
+        # for expert in self.experts:
+        #     e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
+        #         ..., 1] ** 2 + self.layer_norm_eps)
+        #     experts_filter.append(e_filter)
+        # # experts_filter = torch.cat(experts_filter, dim=0)  #(K,L/2,H)
+        # spec_loss = -1 * self.spec_lambda * self.expert_spec_loss(experts_filter[0].squeeze(0), experts_filter[1].squeeze(0))
         # calculate MMD loss
         # mmd_loss = self.mmd_lambda * self.MMD_loss(expert_last_res[0],expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
@@ -244,12 +250,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss, spec_loss
+            return loss, semantic_ali_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss, spec_loss
+            return loss, semantic_ali_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
