@@ -76,9 +76,6 @@ class LSMoERec(SequentialRecommender):
                 GRUExpertEncoder(config),
             ]
         )
-        # shared expert
-        # self.shared_expert = MLPExpertEncoder(config)
-        # self.shared_merge_dense = nn.Linear(self.hidden_size * 2, self.hidden_size)
         # init MoE layers
         self.gate_dense_0 = nn.Linear(self.hidden_size, self.hidden_size)
         self.Gelu = nn.GELU()

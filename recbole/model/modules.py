@@ -83,9 +83,10 @@ class LinearMultiHeadAttention(nn.Module):
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
-        hidden_states = self.dense(context_layer)
-        hidden_states = self.out_dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = context_layer
+        # hidden_states = self.dense(context_layer)
+        # hidden_states = self.out_dropout(hidden_states)
+        # hidden_states = self.LayerNorm(hidden_states + input_tensor)
 
         return hidden_states
 
@@ -275,13 +276,28 @@ class GRUExpertEncoder(FrequencyAugExpert):
         G = G.transpose(1, 2)
         return self.ffn(G)
 
+    # def forward(self, input_tensor):
+    #     self.gru_layers.flatten_parameters()
+    #     # x = self.in_dense(input_tensor)
+    #     # x = self.conv1d(x.transpose(1, 2))
+    #     # conv_input = x.transpose(1, 2)
+    #     #---- calculate gate ----
+    #     gate = self.selective_gate(input_tensor)
+    #     #---- GRU ----
+    #     gru_output, _ = self.gru_layers(input_tensor)
+    #     # gru_output = self.gru_dense(gru_output)
+    #     G = gru_output * gate
+    #     # G = self.conv1dforgru(G.transpose(1, 2))
+    #     # G = G.transpose(1, 2)
+    #     return self.ffn(G)
+
 
 class MLPExpertEncoder(FrequencyAugExpert):
     def __init__(self, config):
         super(MLPExpertEncoder, self).__init__(config)
         self.hidden_size = config["hidden_size"]
         self.num_layers = config["num_layers"]
-        self.kernel_size = config["uaf_kernel_size"]
+        # self.kernel_size = config["uaf_kernel_size"]
         # conv1d for frequency_input_embeddings
         # # UAF
         # self.freq_conv_encoder = nn.Sequential(
