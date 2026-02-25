@@ -9,8 +9,7 @@ import uuid
 from datetime import datetime
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import AttnExperEncoder, UserAdaptiveEncoder, LinearAttnExperEncoder, GRUExpertEncoder, \
-    MLPExpertEncoder
+from recbole.model.modules import AttnExperEncoder, LinearAttnExperEncoder, GRUExpertEncoder, MLPExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
 from recbole.utils.utils import append_line
@@ -64,6 +63,7 @@ class LSMoERec(SequentialRecommender):
         self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.attn_dropout_prob = config["attn_dropout_prob"]
         self.moe_gate_t = config["moe_gate_t"]
+        self.moe_topk = config["moe_topk"]
         # init embedding layer
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
@@ -74,6 +74,7 @@ class LSMoERec(SequentialRecommender):
             [
                 LinearAttnExperEncoder(config),
                 GRUExpertEncoder(config),
+                MLPExpertEncoder(config)
             ]
         )
         # init MoE layers
