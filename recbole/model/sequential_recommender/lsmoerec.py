@@ -213,6 +213,27 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_output.sum(dim=1)
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
+    def calculate_Mlp_filter_loss(self):
+        """
+        计算mlp专家和其他专家的滤波差距
+        Returns:
+
+        """
+        mlpExpert = self.experts[-1]
+        mlp_filter = torch.sqrt(mlpExpert.complex_weight[..., 0] ** 2 + mlpExpert.complex_weight[
+            ..., 1] ** 2 + self.layer_norm_eps).squeeze(0)
+        spec_losses = None
+        for expert in self.experts[:-1]:
+            e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
+                ..., 1] ** 2 + self.layer_norm_eps)
+            e_filter = e_filter.squeeze(0).detach()
+            spec_loss = self.expert_spec_loss(mlp_filter, e_filter)
+            if spec_losses is None:
+                spec_losses = spec_loss
+            else:
+                spec_losses += spec_loss
+        return spec_losses / (len(self.experts) - 1)
+
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
@@ -229,18 +250,9 @@ class LSMoERec(SequentialRecommender):
             self.moe_records['moe_gate_avg'] = self.moe_records['moe_gate_avg'] + torch.mean(moe_gate, dim=0,
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
-        # calculate NCE loss
-        # experts_filter = []
-        # for expert in self.experts:
-        #     e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
-        #         ..., 1] ** 2 + self.layer_norm_eps)
-        #     experts_filter.append(e_filter)
-        # # experts_filter = torch.cat(experts_filter, dim=0)  #(K,L/2,H)
-        # spec_loss = -1 * self.spec_lambda * self.expert_spec_loss(experts_filter[0].squeeze(0), experts_filter[1].squeeze(0))
-        # calculate MMD loss
-        # mmd_loss = self.mmd_lambda * self.MMD_loss(expert_last_res[0],expert_last_res[1])
         pos_items = interaction[self.POS_ITEM_ID]
         semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)
+        mlp_expert_spec_loss = self.spec_lambda * self.calculate_Mlp_filter_loss()
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
             pos_items_emb = self.item_embedding(pos_items)
@@ -248,12 +260,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mlp_expert_spec_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mlp_expert_spec_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
