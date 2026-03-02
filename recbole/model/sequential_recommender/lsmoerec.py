@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import AttnExperEncoder, LinearAttnExperEncoder, GRUExpertEncoder, MLPExpertEncoder
+from recbole.model.modules import AttnExperEncoder, LinearAttnExperEncoder, GRUExpertEncoder
 from recbole.utils.encodeUtils import EventType, EventHandler
 from recbole.model.loss import MMDLoss, GateBalanceLoss, KLInfoNCE, ExpertsSemanticAlignLoss
 from recbole.utils.utils import append_line
@@ -63,7 +63,6 @@ class LSMoERec(SequentialRecommender):
         self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.attn_dropout_prob = config["attn_dropout_prob"]
         self.moe_gate_t = config["moe_gate_t"]
-        self.moe_topk = config["moe_topk"]
         # init embedding layer
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
@@ -74,7 +73,6 @@ class LSMoERec(SequentialRecommender):
             [
                 LinearAttnExperEncoder(config),
                 GRUExpertEncoder(config),
-                MLPExpertEncoder(config)
             ]
         )
         # init MoE layers
@@ -109,7 +107,7 @@ class LSMoERec(SequentialRecommender):
         # self.MMD_loss = MMDLoss(self.kernel_mul, self.kernel_num)
         self.spec_lambda = config["spec_lambda"]
         # self.expert_spec_loss = KLInfoNCE(temp=1.0)
-        self.expert_spec_loss = MMDLoss(self.kernel_mul, self.kernel_num)
+        self.mmd_loss = MMDLoss(self.kernel_mul, self.kernel_num)
         self.align_lambda = config["align_lambda"]
         self.align_loss = ExpertsSemanticAlignLoss(self.item_embedding)
         # 共享编码层
@@ -213,27 +211,6 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_output.sum(dim=1)
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
-    def calculate_Mlp_filter_loss(self):
-        """
-        计算mlp专家和其他专家的滤波差距
-        Returns:
-
-        """
-        mlpExpert = self.experts[-1]
-        mlp_filter = torch.sqrt(mlpExpert.complex_weight[..., 0] ** 2 + mlpExpert.complex_weight[
-            ..., 1] ** 2 + self.layer_norm_eps).squeeze(0)
-        spec_losses = None
-        for expert in self.experts[:-1]:
-            e_filter = torch.sqrt(expert.complex_weight[..., 0] ** 2 + expert.complex_weight[
-                ..., 1] ** 2 + self.layer_norm_eps)
-            e_filter = e_filter.squeeze(0).detach()
-            spec_loss = self.expert_spec_loss(mlp_filter, e_filter)
-            if spec_losses is None:
-                spec_losses = spec_loss
-            else:
-                spec_losses += spec_loss
-        return spec_losses / (len(self.experts) - 1)
-
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
@@ -252,7 +229,6 @@ class LSMoERec(SequentialRecommender):
             self.moe_records['accumulative_num'] += 1
         pos_items = interaction[self.POS_ITEM_ID]
         semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)
-        mlp_expert_spec_loss = self.spec_lambda * self.calculate_Mlp_filter_loss()
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
             pos_items_emb = self.item_embedding(pos_items)
@@ -260,12 +236,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss, mlp_expert_spec_loss
+            return loss, semantic_ali_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss, mlp_expert_spec_loss
+            return loss, semantic_ali_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
