@@ -238,7 +238,7 @@ class LSMoERec(SequentialRecommender):
             self.moe_records['accumulative_num'] += 1
         pos_items = interaction[self.POS_ITEM_ID]
         semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)
-        # mmd_loss = self.spec_lambda * self.calculate_doubleMMD(seq_output, expert_last_res[0], expert_last_res[1])
+        mmd_loss = self.spec_lambda * self.mmd_loss(expert_last_res[0], expert_last_res[1])
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
             pos_items_emb = self.item_embedding(pos_items)
@@ -246,12 +246,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mmd_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mmd_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
