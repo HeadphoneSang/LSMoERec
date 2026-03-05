@@ -237,10 +237,17 @@ class GRUExpertEncoder(FrequencyAugExpert):
 
      """
 
-    def __init__(self, config):
+    def __init__(self, config, dataset):
         super(GRUExpertEncoder, self).__init__(config)
         self.hidden_size = config["hidden_size"]
         self.num_layers = config["num_layers"]
+        self.time_b = config["time_b"]
+        self.eps = config["layer_norm_eps"]
+        self.max_time_gap = dataset.max_time_gap
+        self.min_time_gap = dataset.min_time_gap
+        self.max_bukkit_num = self.bukkit_time_gap(self.max_time_gap) + 1
+        # 时间嵌入
+        self.time_embedding = nn.Embedding(self.max_bukkit_num, self.hidden_size)
         # 用于处理GRU输入的一维卷积层
         self.in_dense = nn.Linear(self.hidden_size, self.hidden_size)
         self.conv1d = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
@@ -261,7 +268,17 @@ class GRUExpertEncoder(FrequencyAugExpert):
         # 用于处理GRU输出的一维卷积层
         self.conv1dforgru = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
 
-    def forward(self, input_tensor):
+    def bukkit_time_gap(self, time_gap):
+        return torch.floor(
+            torch.log((time_gap / (self.min_time_gap + self.eps)) + 1) / torch.log(torch.tensor(self.time_b))).long()
+
+    def forward(self, input_tensor, time_list_seq):
+        time_gap_seq = time_list_seq[:, 1:] - time_list_seq[:, :-1]
+        time_gap_seq = torch.clamp_min(time_gap_seq, 0)
+        time_gap_seq = torch.cat([torch.zeros_like(time_gap_seq[:, :1]), time_gap_seq], dim=1)
+        gap_bukkit_seq = self.bukkit_time_gap(time_gap_seq)
+        time_embedding = self.time_embedding(gap_bukkit_seq)
+        input_tensor = input_tensor + time_embedding
         self.gru_layers.flatten_parameters()
         x = self.in_dense(input_tensor)
         x = self.conv1d(x.transpose(1, 2))
