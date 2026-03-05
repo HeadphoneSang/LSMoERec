@@ -26,7 +26,8 @@ parameter_dict = {
     'valid_metric': 'NDCG@10',
     'moe_gate_t': 0.5,
     'align_lambda': 0.1,
-    'spec_lambda': -0.1, 
+    'spec_lambda': -0.1,
+    'time_b': 1.5,
     'kernel_mul': 2,
     'kernel_num': 2  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
 }
