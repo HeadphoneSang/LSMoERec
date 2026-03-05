@@ -25,6 +25,50 @@ from recbole.sampler import SeqSampler
 from recbole.utils.enum_type import FeatureType
 
 
+class LSMoERecDataset(SequentialDataset):
+    def __init__(self, config):
+        super().__init__(config)
+        self.min_time_gap = 0
+        self.max_time_gap = 0
+
+    def _change_feat_format(self):
+        super()._change_feat_format()
+        self.compute_timeinterval()
+
+    def compute_timeinterval(self):
+        """
+        计算所有的用户交互中，最大的时间间隔
+        Returns: 返回最大的时间间隔 float
+
+        """
+        # 在此处计算最大交互时间间隔
+        inter_feat = self.inter_feat  # 已转为 Interaction 格式
+        user_list = inter_feat[self.uid_field].unique()
+
+        max_time_gap = 0.0  # 所有序列中的最大间隔
+        min_time_gap = float('inf')
+        device = self.config.device
+        for user_id in user_list:
+            idx = (inter_feat[self.uid_field] == user_id)
+            user_ts = inter_feat[self.time_field][idx]  # Tensor of timestamps
+            user_ts = user_ts.to(device)
+            if len(user_ts) < 2:
+                continue  # 无法计算间隔
+            sorted_ts, indices = user_ts.sort()  # 升序排列
+            time_diff = sorted_ts[1:] - sorted_ts[:-1]
+            time_diff = time_diff[time_diff > 0]
+            if len(time_diff) <= 0:
+                continue
+            time_diff_max = time_diff.max()
+            time_diff_min = time_diff.min()
+            min_time_gap = min(min_time_gap, time_diff_min)
+            max_time_gap = max(time_diff_max, max_time_gap)
+
+        # 保存到类中，模型可以通过 self.max_time_gap 访问
+        self.max_time_gap = max_time_gap
+        self.min_time_gap = min_time_gap
+
+
 class GRU4RecKGDataset(KGSeqDataset):
     def __init__(self, config):
         super().__init__(config)
@@ -122,8 +166,8 @@ class DIENDataset(SequentialDataset):
                     else (new_length,) + list_len
                 )
                 if (
-                    self.field2type[field] in [FeatureType.FLOAT, FeatureType.FLOAT_SEQ]
-                    and field in self.config["numerical_features"]
+                        self.field2type[field] in [FeatureType.FLOAT, FeatureType.FLOAT_SEQ]
+                        and field in self.config["numerical_features"]
                 ):
                     shape += (2,)
                 list_ftype = self.field2type[list_field]
@@ -136,7 +180,7 @@ class DIENDataset(SequentialDataset):
 
                 value = self.inter_feat[field]
                 for i, (index, length) in enumerate(
-                    zip(item_list_index, item_list_length)
+                        zip(item_list_index, item_list_length)
                 ):
                     new_dict[list_field][i][:length] = value[index]
 
@@ -144,7 +188,7 @@ class DIENDataset(SequentialDataset):
                 if field == self.iid_field:
                     new_dict[self.neg_item_list_field] = torch.zeros(shape, dtype=dtype)
                     for i, (index, length) in enumerate(
-                        zip(item_list_index, item_list_length)
+                            zip(item_list_index, item_list_length)
                     ):
                         new_dict[self.neg_item_list_field][i][:length] = (
                             self.neg_item_list[index]
