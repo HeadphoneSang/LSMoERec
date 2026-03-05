@@ -63,6 +63,7 @@ class LSMoERec(SequentialRecommender):
         self.hidden_dropout_prob = config["hidden_dropout_prob"]
         self.attn_dropout_prob = config["attn_dropout_prob"]
         self.moe_gate_t = config["moe_gate_t"]
+        self.TIME_SEQ = 'timestamp_list'
         # init embedding layer
         self.item_embedding = nn.Embedding(
             self.n_items, self.hidden_size, padding_idx=0
@@ -72,7 +73,7 @@ class LSMoERec(SequentialRecommender):
         self.experts = nn.ModuleList(
             [
                 LinearAttnExperEncoder(config),
-                GRUExpertEncoder(config),
+                GRUExpertEncoder(config, dataset),
             ]
         )
         # init MoE layers
@@ -137,8 +138,7 @@ class LSMoERec(SequentialRecommender):
         Returns: moe gate score
         """
         # (batch,M,seq_len) or (batch,seq_len)
-        # moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)
-        moe_gate = torch.mean(filtered_resp, dim=-1)
+        moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)
         # (batch,M) or (batch,)
         moe_gate = self.moe_proj1(moe_gate).squeeze(-1)
         return moe_gate
@@ -167,7 +167,7 @@ class LSMoERec(SequentialRecommender):
         output_gated = self.final_output_drop(output_gated)
         return self.LayerNorm(output_gated + expert_output)
 
-    def forward(self, item_seq, item_seq_len):
+    def forward(self, item_seq, item_seq_len, time_list_seq):
         """
         将所有专家的编码解耦的方法
         """
@@ -190,7 +190,10 @@ class LSMoERec(SequentialRecommender):
             # (batch,seq_len_hidden_size)
             filter_out = expert.filter_layer(seq_embedding)
             moe_gates.append(self.calculate_moe_gate_dense(filter_out))
-            expert_output = expert(filter_out)
+            if isinstance(expert, GRUExpertEncoder):
+                expert_output = expert(filter_out, time_list_seq)
+            else:
+                expert_output = expert(filter_out)
             expert_output = self.expert_shared_FFN(expert_output, expert_hidden_gate, seq_embedding)
             # (batch,hidden_size)
             last_expert_output = expert_output[batch_ids, item_seq_len]
@@ -207,24 +210,12 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_output.sum(dim=1)
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
-    # def calculate_doubleMMD(self, su_output, attention_output, gru_output):
-    #     """
-    #     calculate mmd loss between su_output and attention_output, as well as su_output and gru_output
-    #     Args:
-    #         su_output: (batch, hidden)
-    #         attention_output: (batch, hidden)
-    #         gru_output: (batch, hidden)
-    #
-    #     Returns: loss item
-    #     """
-    #     su_attention_mmd = self.mmd_loss(su_output, attention_output)
-    #     su_gru_mmd = self.mmd_loss(su_output, gru_output)
-    #     return su_attention_mmd + su_gru_mmd
 
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len)  #(batch,hidden_size),(batch,M)
+        time_list_seq = interaction[self.TIME_SEQ]
+        seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len,time_list_seq)  #(batch,hidden_size),(batch,M)
         # bal_loss = self.bal_loss_fct(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
         # record moe_gate_avg
@@ -257,8 +248,9 @@ class LSMoERec(SequentialRecommender):
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        time_list_seq = interaction[self.TIME_SEQ]
         test_item = interaction[self.ITEM_ID]
-        seq_output, _, _ = self.forward(item_seq, item_seq_len)
+        seq_output, _, _ = self.forward(item_seq, item_seq_len, time_list_seq)
         test_item_emb = self.item_embedding(test_item)
         scores = torch.mul(seq_output, test_item_emb).sum(dim=1)  # [B]
         return scores
@@ -277,7 +269,8 @@ class LSMoERec(SequentialRecommender):
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
         pos_item_ids = interaction[self.ITEM_ID]  #(batch,)
         neg_item_ids = interaction[self.NEG_FIELD]  #(batch_size,neg_num)
-        seq_output, _, _ = self.forward(item_seq, item_seq_len)  #(batch,hidden_size)
+        time_list_seq = interaction[self.TIME_SEQ]
+        seq_output, _, _ = self.forward(item_seq, item_seq_len, time_list_seq)  #(batch,hidden_size)
         pos_item_embeds = self.item_embedding(pos_item_ids)  #(batch_size,hidden_size)
         neg_item_embeds = self.item_embedding(neg_item_ids)  #(batch_size,neg_num,hidden_size)
         pos_scores = torch.mul(seq_output, pos_item_embeds).sum(dim=1)
@@ -290,7 +283,8 @@ class LSMoERec(SequentialRecommender):
     def full_sort_predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        seq_output, _, _ = self.forward(item_seq, item_seq_len)
+        time_list_seq = interaction[self.TIME_SEQ]
+        seq_output, _, _ = self.forward(item_seq, item_seq_len, time_list_seq)
         test_items_emb = self.item_embedding.weight
         scores = torch.matmul(
             seq_output, test_items_emb.transpose(0, 1)
