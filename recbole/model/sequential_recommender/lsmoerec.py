@@ -137,7 +137,8 @@ class LSMoERec(SequentialRecommender):
         Returns: moe gate score
         """
         # (batch,M,seq_len) or (batch,seq_len)
-        moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)
+        # moe_gate = self.moe_proj0(filtered_resp).squeeze(-1)
+        moe_gate = torch.mean(filtered_resp, dim=-1)
         # (batch,M) or (batch,)
         moe_gate = self.moe_proj1(moe_gate).squeeze(-1)
         return moe_gate
