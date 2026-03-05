@@ -210,12 +210,12 @@ class LSMoERec(SequentialRecommender):
         moe_output = moe_output.sum(dim=1)
         return self.output_hidden_filter(moe_output), moe_gates.squeeze(-1), expert_last_res
 
-
     def calculate_loss(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
         item_seq_len = interaction[self.ITEM_SEQ_LEN]
         time_list_seq = interaction[self.TIME_SEQ]
-        seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len,time_list_seq)  #(batch,hidden_size),(batch,M)
+        seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len,
+                                                             time_list_seq)  #(batch,hidden_size),(batch,M)
         # bal_loss = self.bal_loss_fct(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
         # record moe_gate_avg
