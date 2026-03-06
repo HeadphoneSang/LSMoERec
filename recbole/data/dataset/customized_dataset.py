@@ -31,9 +31,9 @@ class LSMoERecDataset(SequentialDataset):
         self.min_time_gap = 0
         self.max_time_gap = 0
 
-    def _change_feat_format(self):
-        super()._change_feat_format()
-        self.compute_timeinterval()
+    # def _change_feat_format(self):
+    #     super()._change_feat_format()
+    #     self.compute_timeinterval()
 
     def compute_timeinterval(self):
         """
@@ -52,6 +52,7 @@ class LSMoERecDataset(SequentialDataset):
             idx = (inter_feat[self.uid_field] == user_id)
             user_ts = inter_feat[self.time_field][idx]  # Tensor of timestamps
             user_ts = user_ts.to(device)
+            user_ts = user_ts[user_ts > 0]
             if len(user_ts) < 2:
                 continue  # 无法计算间隔
             sorted_ts, indices = user_ts.sort()  # 升序排列

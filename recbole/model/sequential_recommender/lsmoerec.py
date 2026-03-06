@@ -73,7 +73,7 @@ class LSMoERec(SequentialRecommender):
         self.experts = nn.ModuleList(
             [
                 LinearAttnExperEncoder(config),
-                GRUExpertEncoder(config, dataset),
+                GRUExpertEncoder(config),
             ]
         )
         # init MoE layers
