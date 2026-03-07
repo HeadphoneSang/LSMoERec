@@ -251,9 +251,9 @@ class GRUExpertEncoder(FrequencyAugExpert):
         self.left_pad_num = self.kernel_size - 1
         self.conv1d = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=self.kernel_size, padding=0)
         self.selective_gate = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size // 2),
+            nn.Linear(self.hidden_size * 2, self.hidden_size),
             nn.SiLU(),
-            nn.Linear(self.hidden_size // 2, self.hidden_size),
+            nn.Linear(self.hidden_size, self.hidden_size),
             nn.Dropout(0.3),
         )
         self.gru_layers = nn.GRU(
@@ -266,6 +266,8 @@ class GRUExpertEncoder(FrequencyAugExpert):
         self.gru_dense = nn.Linear(self.hidden_size, self.hidden_size)
         # 用于处理GRU输出的一维卷积层
         self.conv1dforgru = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=self.kernel_size, padding=0)
+
+        self.gru_layernorm = nn.LayerNorm(self.hidden_size, eps=self.eps)
 
     def bukkit_time_gap(self, time_gap):
         gap = time_gap.clone()
@@ -296,10 +298,11 @@ class GRUExpertEncoder(FrequencyAugExpert):
         time_embedding = self.time_embedding(gap_bukkit_seq)
         conv_input = torch.cat([x, time_embedding], dim=-1)  #(batch,seq_len,hidden_size*2)
         #---- calculate gate ----
-        gate = self.selective_gate(x)
+        gate = self.selective_gate(conv_input)
         #---- GRU ----
         gru_output, _ = self.gru_layers(conv_input)
         gru_output = self.gru_dense(gru_output)
+        res = gru_output
         G = gru_output * gate
 
         # res casual conv1d
@@ -307,7 +310,8 @@ class GRUExpertEncoder(FrequencyAugExpert):
         G = F.pad(G, (self.left_pad_num, 0))
         G = self.conv1dforgru(G)
         G = G.transpose(1, 2)
-        return self.ffn(G)
+
+        return self.ffn(self.gru_layernorm(G + res))
 
     # def forward(self, input_tensor):
     #     self.gru_layers.flatten_parameters()
