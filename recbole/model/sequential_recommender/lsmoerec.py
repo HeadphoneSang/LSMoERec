@@ -113,6 +113,9 @@ class LSMoERec(SequentialRecommender):
         self.align_loss = ExpertsSemanticAlignLoss(self.item_embedding)
         # 共享编码层
         # self.shared_encoder = UserAdaptiveEncoder(config)
+        # 负载均衡
+        self.balance_loss = GateBalanceLoss(len(self.experts))
+        self.bal_lambda = config["bal_lambda"]
 
     # @EventHandler(EventType.NOTICE_EVENT)
     # def test_notification(self):
@@ -216,7 +219,6 @@ class LSMoERec(SequentialRecommender):
         time_list_seq = interaction[self.TIME_SEQ]
         seq_output, moe_gate, expert_last_res = self.forward(item_seq, item_seq_len,
                                                              time_list_seq)  #(batch,hidden_size),(batch,M)
-        # bal_loss = self.bal_loss_fct(moe_gate)
         expert_last_res = expert_last_res.permute(1, 0, 2)  # (M,batch,hidden_size)
         # record moe_gate_avg
         if self.moe_records is None:
@@ -229,8 +231,9 @@ class LSMoERec(SequentialRecommender):
                                                                                              keepdim=False).detach()
             self.moe_records['accumulative_num'] += 1
         pos_items = interaction[self.POS_ITEM_ID]
-        semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)
-        # mmd_loss = self.spec_lambda * self.mmd_loss(expert_last_res[0], expert_last_res[1])
+        semantic_ali_loss = self.align_lambda * self.align_loss(expert_last_res, pos_items)  # 语义对齐损失
+        bal_loss = self.balance_loss(moe_gate) * self.bal_lambda  # 负载均衡损失
+        mmd_loss = self.spec_lambda * self.mmd_loss(expert_last_res[0], expert_last_res[1])  # 语义分割损失
         if self.loss_type == "BPR":
             neg_items = interaction[self.NEG_ITEM_ID]
             pos_items_emb = self.item_embedding(pos_items)
@@ -238,12 +241,12 @@ class LSMoERec(SequentialRecommender):
             pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
             neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
             loss = self.loss_fct(pos_score, neg_score)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mmd_loss, bal_loss
         else:  # self.loss_type = 'CE'
             test_item_emb = self.item_embedding.weight
             logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
             loss = self.loss_fct(logits, pos_items)
-            return loss, semantic_ali_loss
+            return loss, semantic_ali_loss, mmd_loss, bal_loss
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]

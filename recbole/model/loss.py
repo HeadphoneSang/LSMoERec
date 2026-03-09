@@ -76,7 +76,7 @@ class GateBalanceLoss(nn.Module):
             moe_gate: (batch,M) MoE gate vector for every sequence
         Returns
         """
-        E_gate = 1 / torch.tensor(gate_num, device=moe_gate.device)
+        E_gate = 1 / torch.tensor(self.gate_num, device=moe_gate.device)
         mean_gate = torch.mean(moe_gate, dim=0)  # (M,)
         return torch.sum(torch.pow(mean_gate - E_gate, 2), dim=0)
 
