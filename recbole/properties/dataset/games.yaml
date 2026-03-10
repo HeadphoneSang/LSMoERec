@@ -36,7 +36,7 @@ unused_col: ~                   # (dict) The suffix of atomic files: (list) fiel
 # Filtering
 rm_dup_inter: ~                 # (str) Whether to remove duplicated user-item interactions.
 val_interval: ~                 # (dict) Filter inter by values in {value field (str): interval (str)}.
-filter_inter_by_user_or_item: True    # (bool) Whether or not to filter inter by user or item.
+filter_inter_by_user_or_item: True    #  (bool) Whether or not to filter inter by user or item.
 # Filtering
 user_inter_num_interval: "[5,inf)"    # 用户交互数量区间，保留至少5次交互的用户
 item_inter_num_interval: "[5,inf)"    # 项目交互数量区间，保留至少5次交互的项目
