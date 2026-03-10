@@ -7,7 +7,7 @@ from torch.nn.init import xavier_uniform_, xavier_normal_
 
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.loss import BPRLoss
-from recbole.model.modules import MultiHeadAttention
+from recbole.model.modules import LinearMultiHeadAttention
 
 
 class GLINTRU(SequentialRecommender):
@@ -63,7 +63,7 @@ class GLINTRU(SequentialRecommender):
         # 用于处理GRU输出的一维卷积层
         self.conv1dforgru = nn.Conv1d(self.hidden_size, self.hidden_size, kernel_size=3, padding=1)
         #线性注意力专家 (当序列长度小于隐藏维度的时候，是不是普通的注意力更快)
-        self.linearattention = MultiHeadAttention(
+        self.linearattention = LinearMultiHeadAttention(
             self.n_heads,
             self.hidden_size,
             self.hidden_dropout_prob,
