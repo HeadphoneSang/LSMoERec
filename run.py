@@ -9,7 +9,7 @@ parameter_dict = {
     'train_neg_sample_args': None,  #
     'neg_sampling': None,
     'mask_ratio': 0.2,
-    'hidden_size': 64,  #ML-1M 128
+    'hidden_size': 64,
     'embedding_size': 64,
     'num_layers': 2,
     'n_heads': 8,
