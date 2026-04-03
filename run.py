@@ -26,14 +26,14 @@ parameter_dict = {
     'valid_metric': 'NDCG@10',
     'moe_gate_t': 0.5,
     'align_lambda': 0.1,
-    'spec_lambda': -0.1,
+    'spec_lambda': -1.0,
     'bal_lambda': 0.1,
     'time_b': 1.5,  # The larger the time_b, the more the impact of time on the differences among the samples.
     'kernel_mul': 2,
     'kernel_num': 2,  # The more kernel there are, the greater the impact of MMD on the differences among the samples.
     'conv_kernel_size': 3
 }
-train_valid_result = run_recbole(model='LSMoERec', dataset='games', config_dict=parameter_dict)
+train_valid_result = run_recbole(model='LSMoERec', dataset="beauty", config_dict=parameter_dict)
 res_str = dict_to_table_str(train_valid_result)
 webhook = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=6b65c26a-1314-4708-8fbf-03fa1ecb979e'
 send_wecom_robot_msg(webhook, res_str)
